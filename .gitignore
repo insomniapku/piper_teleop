@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual Environment
+piper_venv/
+venv/
+env/
+
+# ROS
+log/
+build/
+install/
+devel/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# System
+.DS_Store
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+*~
+
+# Data files
+*.bag
+*.pkl
+*.npy
+
+# Claude
+.claude/
