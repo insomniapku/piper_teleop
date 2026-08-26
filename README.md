@@ -2,6 +2,38 @@
 
 这是一个用于Piper机械臂控制和遥操作的完整项目，包括SDK控制、ROS集成和遥操作功能。
 
+## Pico XR 直连遥操作（当前推荐）
+
+Pico 直接控制 Piper 时使用根目录的新入口：
+
+```bash
+python pico_teleop_piper_fixed.py \
+    --hardware \
+    --can-name can0 \
+    --yaw-deg 0
+```
+
+程序显示安全提示后输入 `ARM`，随后操作方式与原直连脚本一致：
+
+- 握住右手 grip：控制机械臂末端位置；
+- 松开 grip：停止更新机械臂目标；
+- 右手 trigger：控制夹爪；
+- `Ctrl+C`：停止程序。
+
+默认 setting：
+
+```text
+control-rate   = 50 Hz
+position-scale = 1.0
+max-speed      = 0.08 m/s
+speed-percent  = 40
+yaw-deg        = 0
+```
+
+该入口默认使用正确的 XR→Piper 坐标变换、MOVEP、最新 XR timestamp、实际末端姿态保持和每周期速度限制。未指定 `--hardware` 时只运行无硬件 dry-run，不会连接 CAN。
+
+旧的 `pico_teleop_piper.py` 和 `pico_teleop_improved.py` 仍然保留，但不再作为 Pico 直连遥操作的推荐入口。新入口不会自动回 home，也不会在退出时自动 Disable 或 Reset；运行前后请按照现场已有的机械臂安全流程处理。
+
 ## 项目结构
 
 ```
