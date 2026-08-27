@@ -1,38 +1,87 @@
 # Piper Robotic Arm Control & Teleoperation
 
-这是一个用于Piper机械臂控制和遥操作的完整项目，包括SDK控制、ROS集成和遥操作功能。
+这是 Piper + Pico XR 遥操作仓库。当前正式真机版本是 V1 Cartesian Stable；
+V2 Joint IK 正在开发中，尚未开放真机入口。
 
-## Pico XR 直连遥操作（当前推荐）
+## 支持状态
 
-Pico 直接控制 Piper 时使用根目录的新入口：
+| 版本 | 状态 | 入口 |
+|---|---|---|
+| V1 Cartesian Stable | **SUPPORTED**，当前正式版 | `./run_piper_normal_teleop.sh` |
+| V1 Safe Test | **SUPPORTED**，首次连接/恢复测试 | `./run_piper_safe_teleop.sh` |
+| V2 Joint IK | **EXPERIMENTAL / NO LIVE HARDWARE** | `feature/piper-ik-orientation-v2` |
+| 旧 Python/ROS/IK 实验 | **LEGACY** | 不作为真机入口 |
+
+详细版本、完整操作流程和故障排查：
+
+- [VERSIONS.md](VERSIONS.md)
+- [docs/OPERATIONS_ZH.md](docs/OPERATIONS_ZH.md)
+
+## 当前正式版 V1
+
+工作站上的正式启动方式：
 
 ```bash
-python pico_teleop_piper_fixed.py \
-    --hardware \
-    --can-name can0 \
-    --yaw-deg 0
+cd /home/zktitan/piper_teleop_latency
+./run_piper_normal_teleop.sh
 ```
 
-程序显示安全提示后输入 `ARM`，随后操作方式与原直连脚本一致：
-
-- 握住右手 grip：控制机械臂末端位置；
-- 松开 grip：停止更新机械臂目标；
-- 右手 trigger：控制夹爪；
-- `Ctrl+C`：停止程序。
-
-默认 setting：
+启动脚本固定使用已经过真机验证的参数：
 
 ```text
-control-rate   = 50 Hz
-position-scale = 1.0
-max-speed      = 0.08 m/s
-speed-percent  = 40
-yaw-deg        = 0
+controller-hand       = left
+position-scale        = 0.8
+speed-percent         = 100
+Python speed limit    = disabled
+Python workspace clip = disabled
+gripper               = binary, fully open/fully closed
+orientation           = hold on clutch engage
+CAN                    = can0
+XR-to-robot yaw        = 0 deg
 ```
 
-该入口默认使用正确的 XR→Piper 坐标变换、MOVEP、最新 XR timestamp、实际末端姿态保持和每周期速度限制。未指定 `--hardware` 时只运行无硬件 dry-run，不会连接 CAN。
+操作：
 
-旧的 `pico_teleop_piper.py` 和 `pico_teleop_improved.py` 仍然保留，但不再作为 Pico 直连遥操作的推荐入口。新入口不会自动回 home，也不会在退出时自动 Disable 或 Reset；运行前后请按照现场已有的机械臂安全流程处理。
+- 按住左手 Grip：机械臂位置跟随；
+- 松开 Grip：暂停跟随，可把手柄重新放回舒适位置；
+- 左手 Trigger：完整张开或完整闭合夹爪；
+- 先松开 Grip，再按 `Ctrl-C` 停止程序。
+
+程序显示安全提示时，确认机械臂周围无人和障碍物后再输入 `ARM`。
+
+## 首次连接或恢复后的 Safe Test
+
+不要在网络/CAN 恢复后直接运行正式速度。先执行：
+
+```bash
+cd /home/zktitan/piper_teleop_latency
+./run_piper_safe_teleop.sh
+```
+
+Safe Test 使用 20% 硬件速度、小范围位移且不控制夹爪。依次确认前后、左右、
+上下方向后，再停止 Safe Test 并启动正式版。
+
+## Pico 连接
+
+Linux 上先启动 XRoboToolkit PC Service，再打开 Pico 的 XRoboToolkit 应用。
+Pico 输入的端口必须以 PC Service **当前显示**为准，不要固定使用历史端口。
+
+```bash
+/opt/apps/roboticsservice/runService.sh
+```
+
+如果 PC Service 已通过桌面图标运行，不要再启动第二个实例。
+
+## 冻结版本
+
+```text
+branch: snapshot/piper-teleop-v1-working-20260826
+tag:    piper-teleop-v1-working-20260826
+commit: 6b2b18b08d394118fcfdc473df25d957c9fe27b5
+```
+
+`pico_teleop_piper.py`、`pico_teleop_improved.py` 和旧 PyKDL/Placo 文件只保留作
+历史参考。不要在正式遥操作运行时并行启动 SDK 测试脚本或第二个 CAN 控制进程。
 
 ## 项目结构
 
