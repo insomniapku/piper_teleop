@@ -42,7 +42,7 @@ Safe Test 与 V1 使用相同核心控制器，但采用低风险参数：
 V2 是新的末端旋转/关节 IK 开发线。
 
 - 分支：`feature/piper-ik-orientation-v2`
-- 状态：`EXPERIMENTAL / NO LIVE HARDWARE`
+- 状态：`EXPERIMENTAL / LIVE TESTED`，仍在现场调参
 - 起点：V1 验证提交 `6b2b18b`
 
 目标架构：
@@ -55,8 +55,12 @@ Pico relative position + quaternion
                  -> Piper JointCtrl
 ```
 
-在 V2 完成离线轨迹、关节限位、不可达目标、单位转换和操作者在场的低速验证前，
-仓库不得提供 V2 正式真机启动脚本。
+已完成 9 项 IK 单元测试、121 帧连续轨迹 dry-run、完整控制链 dry-run，以及
+操作者在场的低速/正式参数真机测试。V2 仍保留为独立实验入口，不替换 V1 回退版。
+
+现场调参新增 `--no-joint-step-limit`：它关闭 V2 额外的逐帧关节输出限幅，以减少
+快速手柄运动时的滞后。真实关节角限制、Piper 固件速度/加速度保护、IK 不可达保持、
+XR 0.2 秒超时和 Grip clutch 均继续生效。
 
 ## Legacy / Experiments
 

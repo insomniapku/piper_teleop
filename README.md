@@ -1,7 +1,7 @@
 # Piper Robotic Arm Control & Teleoperation
 
-这是 Piper + Pico XR 遥操作仓库。当前正式真机版本是 V1 Cartesian Stable；
-V2 Joint IK 正在开发中，尚未开放真机入口。
+这是 Piper + Pico XR 遥操作仓库。V1 Cartesian Stable 是冻结回退版本；
+V2 Joint IK 已完成离线测试和操作者在场真机测试，仍处于现场调参阶段。
 
 ## 支持状态
 
@@ -9,7 +9,7 @@ V2 Joint IK 正在开发中，尚未开放真机入口。
 |---|---|---|
 | V1 Cartesian Stable | **SUPPORTED**，当前正式版 | `./run_piper_normal_teleop.sh` |
 | V1 Safe Test | **SUPPORTED**，首次连接/恢复测试 | `./run_piper_safe_teleop.sh` |
-| V2 Joint IK | **EXPERIMENTAL / NO LIVE HARDWARE** | `feature/piper-ik-orientation-v2` |
+| V2 Joint IK | **EXPERIMENTAL / LIVE TESTED**，现场调参 | `pico_teleop_piper_ik_v2.py` |
 | 旧 Python/ROS/IK 实验 | **LEGACY** | 不作为真机入口 |
 
 详细版本、完整操作流程和故障排查：
@@ -60,6 +60,33 @@ cd /home/zktitan/piper_teleop_latency
 
 Safe Test 使用 20% 硬件速度、小范围位移且不控制夹爪。依次确认前后、左右、
 上下方向后，再停止 Safe Test 并启动正式版。
+
+## V2 Joint IK 现场测试入口
+
+V2 使用四元数/旋转矩阵保持末端姿态，Pinocchio 求解 J1-J6，并通过
+`JointCtrl` 发送连续关节目标。当前工作站使用 V1 的共享虚拟环境：
+
+```bash
+cd /home/zktitan/piper_teleop_ik_v2
+/home/zktitan/piper_teleop_latency/.venv/bin/python -u \
+  pico_teleop_piper_ik_v2.py \
+  --hardware \
+  --controller-hand left \
+  --position-scale 0.8 \
+  --rotation-scale 1.0 \
+  --max-orientation-delta-deg 180 \
+  --no-joint-step-limit \
+  --no-speed-limit \
+  --no-workspace-limit \
+  --speed-percent 100 \
+  --binary-gripper \
+  --can-name can0 \
+  --yaw-deg 0
+```
+
+`--no-joint-step-limit` 只关闭 V2 额外的“每帧最多 N 度”输出限幅。它不会取消
+URDF/SDK/固件关节角限制，也不会取消 IK 失败保持、XR 超时停止或 Grip clutch。
+不要与 `--safe-test` 同时使用。首次连接或修改 IK 后仍必须先运行 `--safe-test`。
 
 ## Pico 连接
 

@@ -10,7 +10,7 @@
 |---|---|---|---|
 | V1 Cartesian Stable | 当前正式版 | `run_piper_normal_teleop.sh` | 日常真机遥操作 |
 | V1 Safe Test | 当前安全测试版 | `run_piper_safe_teleop.sh` | 首次连机、CAN 或方向验证 |
-| V2 Joint IK | 开发中，不可用于真机 | V2 分支中的 dry-run（待实现） | 四元数末端旋转、Pinocchio IK、关节连续控制 |
+| V2 Joint IK | 已真机测试，仍在现场调参 | `pico_teleop_piper_ik_v2.py` | 四元数末端旋转、Pinocchio IK、关节连续控制 |
 | Legacy / Experiments | 仅供参考 | 旧 Python/ROS/IK 文件 | 不作为正式启动入口 |
 
 ### V1 已冻结基线
@@ -37,7 +37,7 @@ V1 当前行为：
 - 分支：`feature/piper-ik-orientation-v2`
 - 工作站目录：`/home/zktitan/piper_teleop_ik_v2`
 - 起点：V1 冻结提交 `6b2b18b`
-- 当前状态：只建立了独立工作树；不得当作真机正式版启动。
+- 当前状态：已完成离线门槛和操作者在场真机测试；仍保留独立入口，V1 作为回退。
 
 V2 目标：保持 XR 姿态为四元数/旋转矩阵，使用 Piper URDF 与 Pinocchio
 求解 J1-J6，并使用上一帧关节解保证连续。位置为主要任务，姿态为软任务，
@@ -177,6 +177,19 @@ cd /home/zktitan/piper_teleop_latency
 
 不要使用宽泛的 `pkill python`。如果确有残留，只处理输出中明确对应本仓库的 PID。
 
+### V2 取消额外逐帧关节限速
+
+现场确认 1°/帧输出限幅会在快速操作时频繁介入。需要关闭这层额外限幅时，V2
+启动命令加入：
+
+```text
+--no-joint-step-limit
+```
+
+它不能与 `--safe-test` 同时使用。关闭后仍然存在：J1-J6 的 URDF/SDK/机械限位、
+Piper 固件速度和加速度保护、IK 不可达目标保持、XR 超过 0.2 秒不更新即停止，
+以及 Grip clutch。关闭逐帧限幅并不等于取消机械臂硬限制。
+
 ## 10. 常见问题
 
 ### Pico 显示连接，但机械臂不动
@@ -220,7 +233,8 @@ V2 必须依次通过：
 7. 操作者在场的低速、小范围真机测试；
 8. 验证通过后才能新增 `run_piper_v2_teleop.sh` 正式入口。
 
-在此之前，V2 README 必须明确标注 `EXPERIMENTAL / NO LIVE HARDWARE`。
+完成上述门槛后可标注 `EXPERIMENTAL / LIVE TESTED`；在现场调参稳定并形成固定启动
+脚本之前，不应替换 V1 的 `SUPPORTED` 回退入口。
 
 ## 12. 建议的仓库整理方式
 
