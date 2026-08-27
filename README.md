@@ -75,7 +75,7 @@ cd /home/zktitan/piper_teleop_ik_v2
   --position-scale 0.8 \
   --rotation-scale 1.0 \
   --max-orientation-delta-deg 180 \
-  --no-joint-step-limit \
+  --max-joint-step-deg 2.0 \
   --no-speed-limit \
   --no-workspace-limit \
   --speed-percent 100 \
@@ -84,9 +84,9 @@ cd /home/zktitan/piper_teleop_ik_v2
   --yaw-deg 0
 ```
 
-`--no-joint-step-limit` 只关闭 V2 额外的“每帧最多 N 度”输出限幅。它不会取消
-URDF/SDK/固件关节角限制，也不会取消 IK 失败保持、XR 超时停止或 Grip clutch。
-不要与 `--safe-test` 同时使用。首次连接或修改 IK 后仍必须先运行 `--safe-test`。
+正式现场参数保留 `--max-joint-step-deg 2.0`，在 50 Hz 下限制每个关节每帧最多
+变化 2°。不要在真机正式操作中使用 `--no-joint-step-limit`；完全取消该保护曾导致
+raw IK 大跳步和机械臂接近硬限位。首次连接或修改 IK 后仍必须先运行 `--safe-test`。
 
 ## Pico 连接
 

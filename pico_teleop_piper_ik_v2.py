@@ -139,7 +139,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rotation-scale", type=float, default=1.0)
     parser.add_argument("--max-orientation-delta-deg", type=float, default=45.0)
     parser.add_argument("--max-speed", type=float, default=0.08)
-    parser.add_argument("--max-joint-step-deg", type=float, default=1.0)
+    parser.add_argument("--max-joint-step-deg", type=float, default=2.0)
     parser.add_argument(
         "--no-joint-step-limit",
         action="store_true",

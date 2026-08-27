@@ -177,18 +177,18 @@ cd /home/zktitan/piper_teleop_latency
 
 不要使用宽泛的 `pkill python`。如果确有残留，只处理输出中明确对应本仓库的 PID。
 
-### V2 取消额外逐帧关节限速
+### V2 逐帧关节限速
 
-现场确认 1°/帧输出限幅会在快速操作时频繁介入。需要关闭这层额外限幅时，V2
-启动命令加入：
+现场确认 1°/帧会在快速操作时频繁介入，而完全取消限幅会暴露 raw IK 大跳步。
+正式 V2 使用：
 
 ```text
---no-joint-step-limit
+--max-joint-step-deg 2.0
 ```
 
-它不能与 `--safe-test` 同时使用。关闭后仍然存在：J1-J6 的 URDF/SDK/机械限位、
-Piper 固件速度和加速度保护、IK 不可达目标保持、XR 超过 0.2 秒不更新即停止，
-以及 Grip clutch。关闭逐帧限幅并不等于取消机械臂硬限制。
+不要在真机正式操作中使用 `--no-joint-step-limit`。2°/帧限制之外仍然存在：
+J1-J6 的 URDF/SDK/机械限位、Piper 固件速度和加速度保护、IK 不可达目标保持、
+XR 超过 0.2 秒不更新即停止，以及 Grip clutch。
 
 ## 10. 常见问题
 

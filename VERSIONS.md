@@ -58,8 +58,9 @@ Pico relative position + quaternion
 已完成 9 项 IK 单元测试、121 帧连续轨迹 dry-run、完整控制链 dry-run，以及
 操作者在场的低速/正式参数真机测试。V2 仍保留为独立实验入口，不替换 V1 回退版。
 
-现场调参新增 `--no-joint-step-limit`：它关闭 V2 额外的逐帧关节输出限幅，以减少
-快速手柄运动时的滞后。真实关节角限制、Piper 固件速度/加速度保护、IK 不可达保持、
+现场调参将正式逐帧关节输出上限从 1°提高为 2°，减少快速手柄运动时的滞后。
+`--no-joint-step-limit` 仅保留用于离线诊断，不应连接真机；完全取消该保护曾导致
+raw IK 大跳步和机械臂接近硬限位。真实关节角限制、Piper 固件保护、IK 不可达保持、
 XR 0.2 秒超时和 Grip clutch 均继续生效。
 
 ## Legacy / Experiments

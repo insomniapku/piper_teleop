@@ -12,6 +12,7 @@ from piper_ik_v2 import (
     radians_to_sdk_mdeg,
     sdk_mdeg_to_radians,
 )
+from pico_teleop_piper_ik_v2 import limit_joint_step
 
 
 URDF_PATH = Path(__file__).resolve().parent / "assets" / "piper_description.urdf"
@@ -111,6 +112,19 @@ class TestPiperPinocchioIK(unittest.TestCase):
         encoded = radians_to_sdk_mdeg(joints)
         decoded = sdk_mdeg_to_radians(encoded)
         np.testing.assert_allclose(decoded, joints, atol=np.deg2rad(0.00051))
+
+    def test_two_degree_output_step_limit(self):
+        previous = np.zeros(6, dtype=np.float64)
+        candidate = np.deg2rad([3.0, -4.0, 1.5, -0.5, 2.0, -2.0])
+        command, was_limited = limit_joint_step(
+            previous, candidate, np.deg2rad(2.0)
+        )
+        self.assertTrue(was_limited)
+        np.testing.assert_allclose(
+            np.rad2deg(command),
+            [2.0, -2.0, 1.5, -0.5, 2.0, -2.0],
+            atol=1.0e-12,
+        )
 
     def test_invalid_quaternion_is_rejected(self):
         position, _ = self.solver.forward_pose(self.seed)
