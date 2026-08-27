@@ -105,24 +105,16 @@ class TrajectoryRecorder:
 
         return True  # Always return True to allow joint-only recording
 
-    def _camera_capture_loop(self, cam_idx: int):
-        """Background thread for capturing camera frames."""
-        cap = self.captures[cam_idx]
-        writer = self.session.video_writers[cam_idx]
-        stop_flag = self.camera_stop_flags[cam_idx]
-
-        while not stop_flag.is_set():
+    def _capture_camera_frames(self) -> dict[int, np.ndarray]:
+        """Capture one frame from each camera synchronously."""
+        frames = {}
+        for cam_idx, cap in self.captures.items():
             ret, frame = cap.read()
-            if not ret:
+            if ret:
+                frames[cam_idx] = frame
+            else:
                 print(f"[RECORDER] Camera {cam_idx} read failed")
-                time.sleep(0.001)
-                continue
-
-            with self.lock:
-                if self.is_recording and writer:
-                    writer.write(frame)
-
-            time.sleep(1.0 / self.fps)
+        return frames
 
     def start_recording(self) -> bool:
         """Start a new recording session."""
@@ -186,19 +178,6 @@ class TrajectoryRecorder:
                 video_writers=video_writers,
             )
 
-            # Start camera capture threads
-            for cam_idx in self.captures.keys():
-                if cam_idx in video_writers:
-                    stop_flag = threading.Event()
-                    self.camera_stop_flags[cam_idx] = stop_flag
-                    thread = threading.Thread(
-                        target=self._camera_capture_loop,
-                        args=(cam_idx,),
-                        daemon=True,
-                    )
-                    thread.start()
-                    self.camera_threads[cam_idx] = thread
-
             self.is_recording = True
             print(f"[RECORDER] Started recording to {session_dir}")
             if video_writers:
@@ -213,11 +192,21 @@ class TrajectoryRecorder:
         left_joints_rad: np.ndarray,
         right_joints_rad: np.ndarray,
     ):
-        """Record a frame of joint angles."""
+        """Record a frame of joint angles and synchronized camera frames."""
         with self.lock:
             if not self.is_recording or not self.session:
                 return
 
+            # Capture camera frames synchronously
+            camera_frames = self._capture_camera_frames()
+
+            # Write camera frames
+            for cam_idx, frame in camera_frames.items():
+                writer = self.session.video_writers.get(cam_idx)
+                if writer:
+                    writer.write(frame)
+
+            # Record joint angles
             timestamp = time.time() - self.session.start_time
             left_deg = np.rad2deg(left_joints_rad)
             right_deg = np.rad2deg(right_joints_rad)
@@ -235,16 +224,6 @@ class TrajectoryRecorder:
             if not self.is_recording or not self.session:
                 print("[RECORDER] Not currently recording")
                 return None
-
-            # Stop camera threads
-            for stop_flag in self.camera_stop_flags.values():
-                stop_flag.set()
-
-            for thread in self.camera_threads.values():
-                thread.join(timeout=2.0)
-
-            self.camera_threads.clear()
-            self.camera_stop_flags.clear()
 
             # Close all files
             session_dir = self.session.session_dir

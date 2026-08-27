@@ -412,7 +412,9 @@ def run_hardware(args: argparse.Namespace) -> int:
         )
 
         period = 1.0 / args.control_rate
+        recording_period = 1.0 / args.camera_fps  # 30 Hz for recording
         next_tick = last_cycle = last_new_xr_time = time.monotonic()
+        next_recording_tick = next_tick
         last_timestamp = None
         stale_announced = False
         while True:
@@ -435,6 +437,7 @@ def run_hardware(args: argparse.Namespace) -> int:
                     else:
                         if recorder.start_recording():
                             print("[RECORDER] Recording started (B button pressed)")
+                            next_recording_tick = cycle_start  # Reset recording timer
                 previous_b_button = current_b_button
 
             timestamp = xrt.get_time_stamp_ns()
@@ -445,12 +448,13 @@ def run_hardware(args: argparse.Namespace) -> int:
                 for arm in arms:
                     arm.process_pose(dt)
 
-            # Record joint angles if recording is active
-            if recorder and recorder.is_recording:
+            # Record joint angles and camera frames at 30Hz if recording is active
+            if recorder and recorder.is_recording and cycle_start >= next_recording_tick:
                 left_joints = left.previous_joints
                 right_joints = right.previous_joints
                 if left_joints is not None and right_joints is not None:
                     recorder.record_frame(left_joints, right_joints)
+                next_recording_tick += recording_period
 
             if cycle_start - last_new_xr_time > XR_STALE_SECONDS:
                 if not stale_announced:
