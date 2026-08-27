@@ -112,18 +112,23 @@ lcz0820/
 ### 1. 安装依赖
 
 ```bash
-# 创建虚拟环境
-python3 -m venv piper_venv
-source piper_venv/bin/activate
+# 启动脚本固定使用仓库根目录的 .venv
+# --system-site-packages 允许复用 Ubuntu/ROS 已安装的 CAN、SciPy 和 XR 绑定
+python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
 
-# 安装python-can
-pip install python-can
+# 安装仓库内 Piper SDK 和遥操作包
+python -m pip install -e ./piper_sdk
+python -m pip install -e .
 
-# 安装piper_sdk
-cd piper_sdk
-pip install .
-cd ..
+# 验证正式入口需要的模块
+python -c "import xrobotoolkit_sdk, piper_sdk, can, numpy, scipy; print('runtime imports: OK')"
 ```
+
+`xrobotoolkit_sdk` 来自 XRoboToolkit PC Service Python binding。若最后的导入检查
+失败，请先按照 XRoboToolkit 官方说明安装/编译 PC Service Pybind；不要从不明来源
+安装同名包。当前工作站验证环境为 Python 3.12、`xrobotoolkit-sdk 1.0.2`、
+`piper-sdk 0.6.2`、`python-can 4.3.1`、NumPy 1.26.4、SciPy 1.11.4。
 
 ### 2. 配置CAN模块
 
