@@ -386,9 +386,9 @@ def run_hardware(args: argparse.Namespace) -> int:
             left_hardware,
             left_solver,
             installation_rotation(args.left_yaw_deg) @ R_XR_TO_PIPER,
-            xrt.get_left_controller_pose,
-            xrt.get_left_grip,
-            xrt.get_left_trigger,
+            xrt.get_right_controller_pose,  # Swapped: left arm uses right controller
+            xrt.get_right_grip,
+            xrt.get_right_trigger,
             args,
         )
         right = ArmChannel(
@@ -396,9 +396,9 @@ def run_hardware(args: argparse.Namespace) -> int:
             right_hardware,
             right_solver,
             installation_rotation(args.right_yaw_deg) @ R_XR_TO_PIPER,
-            xrt.get_right_controller_pose,
-            xrt.get_right_grip,
-            xrt.get_right_trigger,
+            xrt.get_left_controller_pose,  # Swapped: right arm uses left controller
+            xrt.get_left_grip,
+            xrt.get_left_trigger,
             args,
         )
         arms = (left, right)
