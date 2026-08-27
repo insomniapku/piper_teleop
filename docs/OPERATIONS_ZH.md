@@ -1,6 +1,7 @@
 # Piper XR 遥操作仓库版本与操作手册
 
-> 本文档不包含密码、令牌或其他凭据。
+> 本文档不包含密码、令牌或其他凭据。当前单臂/双臂 V2 的完整命令、参数解释与
+> 故障排查已统一到根目录 [`README.md`](../README.md)；本文继续保留 V1 的历史说明。
 
 ## 1. 版本结论
 
@@ -10,7 +11,8 @@
 |---|---|---|---|
 | V1 Cartesian Stable | 当前正式版 | `run_piper_normal_teleop.sh` | 日常真机遥操作 |
 | V1 Safe Test | 当前安全测试版 | `run_piper_safe_teleop.sh` | 首次连机、CAN 或方向验证 |
-| V2 Joint IK | 已真机测试，仍在现场调参 | `pico_teleop_piper_ik_v2.py` | 四元数末端旋转、Pinocchio IK、关节连续控制 |
+| V2 Single-arm IK | 已真机测试 | `run_piper_v2_single.sh` | 单臂四元数姿态、Pinocchio IK、关节连续控制 |
+| V2 Bimanual IK | 已真机测试，实验性 | `run_piper_v2_bimanual.sh` | 单 XR 客户端、左右独立 IK、`can0/can1` |
 | Legacy / Experiments | 仅供参考 | 旧 Python/ROS/IK 文件 | 不作为正式启动入口 |
 
 ### V1 已冻结基线
@@ -42,6 +44,10 @@ V1 当前行为：
 V2 目标：保持 XR 姿态为四元数/旋转矩阵，使用 Piper URDF 与 Pinocchio
 求解 J1-J6，并使用上一帧关节解保证连续。位置为主要任务，姿态为软任务，
 不再把手柄旋转直接转换成 `RX/RY/RZ` 欧拉角。
+
+当前验证参数为位置比例 `0.8`、旋转比例 `1.0`、姿态范围 `±180°`、
+`5°/frame` 关节输出限制、`2 mm` IK 位置容差和 Piper 速度 `100%`。
+双臂版本使用一个进程读取左右手柄：左手柄控制 `can0`，右手柄控制 `can1`。
 
 ### Legacy 文件
 
@@ -103,10 +109,12 @@ PC Service 显示的端口为准。
 
 ```bash
 ip -details link show can0
+ip -details link show can1
 ```
 
-应看到 `can0` 存在且为 `UP`。如果 CAN 尚未配置，使用仓库/SDK 已验证的 Piper
-CAN 激活脚本；不要在不了解适配器名称和波特率时自行猜测配置。
+单臂应看到 `can0` 为 `UP`；双臂还必须看到 `can1` 为 `UP`。如果 CAN 尚未配置，
+使用仓库/SDK 已验证的 Piper CAN 激活脚本；不要在不了解适配器身份和波特率时
+自行猜测配置。
 
 ## 6. 首次或恢复后的 Safe Test
 
@@ -177,16 +185,17 @@ cd /home/zktitan/piper_teleop_latency
 
 不要使用宽泛的 `pkill python`。如果确有残留，只处理输出中明确对应本仓库的 PID。
 
-### V2 逐帧关节限速
+### V2 逐帧关节限速与 IK 容差
 
-现场确认 1°/帧会在快速操作时频繁介入，而完全取消限幅会暴露 raw IK 大跳步。
+现场确认较低限幅会在快速操作时频繁介入，而完全取消限幅会暴露 raw IK 大跳步。
 正式 V2 使用：
 
 ```text
---max-joint-step-deg 2.0
+--max-joint-step-deg 5
+--ik-position-tolerance-mm 2
 ```
 
-不要在真机正式操作中使用 `--no-joint-step-limit`。2°/帧限制之外仍然存在：
+不要在真机正式操作中使用 `--no-joint-step-limit`。5°/帧限制之外仍然存在：
 J1-J6 的 URDF/SDK/机械限位、Piper 固件速度和加速度保护、IK 不可达目标保持、
 XR 超过 0.2 秒不更新即停止，以及 Grip clutch。
 
@@ -217,8 +226,8 @@ XR 超过 0.2 秒不更新即停止，以及 Grip clutch。
 
 ### 末端无法旋转
 
-这是 V1 当前的设计，不是连接故障。末端四元数旋转将在 V2 经 IK 验证后提供。
-不要临时给 V1 加 `--follow-orientation` 做正式操作，因为该路径仍会转换成欧拉角。
+这是 V1 当前的设计，不是连接故障。需要末端旋转时应使用 V2 固定启动脚本；
+不要临时给 V1 加 `--follow-orientation`，因为该路径仍会转换成欧拉角。
 
 ## 11. V2 开发和发布门槛
 
@@ -231,28 +240,25 @@ V2 必须依次通过：
 5. Pico 录制轨迹 dry-run，确认关节目标连续；
 6. 无 CAN 的长时间运行测试；
 7. 操作者在场的低速、小范围真机测试；
-8. 验证通过后才能新增 `run_piper_v2_teleop.sh` 正式入口。
+8. 验证通过后才可更新固定 V2 启动脚本。
 
-完成上述门槛后可标注 `EXPERIMENTAL / LIVE TESTED`；在现场调参稳定并形成固定启动
-脚本之前，不应替换 V1 的 `SUPPORTED` 回退入口。
+单臂和双臂 V2 已通过当前单元测试、121 帧 dry-run 和操作者在场真机测试，并已形成
+固定启动脚本。V1 仍作为 `SUPPORTED` 回退入口；双臂 V2 因没有碰撞检测继续标记为
+`LIVE TESTED / EXPERIMENTAL`。
 
-## 12. 建议的仓库整理方式
+## 12. 当前仓库入口
 
-为避免破坏现有导入路径，第一阶段不要大规模移动 Python 文件。先增加：
+为避免破坏既有导入路径，历史 Python 文件暂不大规模移动。操作者只使用这些入口：
 
 ```text
-README.md                    # 只保留项目入口和正式启动方式
+README.md                    # 当前完整安装、启动、参数和排障
 VERSIONS.md                  # 各版本状态、分支、提交和适用范围
 docs/OPERATIONS_ZH.md        # 本操作手册
-docs/ARCHITECTURE_V2.md      # V2 四元数/IK 架构
-run_piper_normal_teleop.sh   # 唯一正式 V1 入口
-run_piper_safe_teleop.sh     # 唯一 V1 安全测试入口
+run_piper_normal_teleop.sh   # V1 回退入口
+run_piper_safe_teleop.sh     # V1 安全测试入口
+run_piper_v2_single.sh       # V2 单臂入口
+run_piper_v2_bimanual.sh     # V2 双臂入口
 ```
 
-根 README 应醒目标记：
-
-- `SUPPORTED`：两个 V1 启动脚本；
-- `EXPERIMENTAL`：V2 dry-run；
-- `LEGACY`：其余历史入口，不保证真机安全。
-
-第二阶段在测试覆盖后，才将旧文件移动到 `legacy/`，避免一次整理同时改变运行行为。
+旧文件继续标记为 `LEGACY`，不保证真机安全。移动或删除旧文件应单独进行，避免文档
+整理与运行时重构混在一个变更中。

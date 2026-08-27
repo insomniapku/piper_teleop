@@ -141,6 +141,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-speed", type=float, default=0.08)
     parser.add_argument("--max-joint-step-deg", type=float, default=2.0)
     parser.add_argument(
+        "--ik-position-tolerance-mm",
+        type=float,
+        default=0.5,
+        help="accept IK solutions whose Cartesian position residual is within this value",
+    )
+    parser.add_argument(
         "--no-joint-step-limit",
         action="store_true",
         help="send each accepted IK solution without the extra per-frame joint limiter",
@@ -159,7 +165,11 @@ def parse_args() -> argparse.Namespace:
         parser.error("control rate and position scale must be positive")
     if args.rotation_scale <= 0.0 or not 0.0 < args.max_orientation_delta_deg <= 180.0:
         parser.error("invalid orientation scale/range")
-    if args.max_speed <= 0.0 or args.max_joint_step_deg <= 0.0:
+    if (
+        args.max_speed <= 0.0
+        or args.max_joint_step_deg <= 0.0
+        or args.ik_position_tolerance_mm <= 0.0
+    ):
         parser.error("speed and joint-step limits must be positive")
     if not 1 <= args.speed_percent <= 100:
         parser.error("--speed-percent must be in [1, 100]")
@@ -235,7 +245,9 @@ def run_dry_run(args: argparse.Namespace, r_final: np.ndarray) -> int:
     """Exercise the complete mapping -> IK -> joint safety gate without CAN."""
     print("V2 CONTROL DRY-RUN: no XR import, no Piper SDK import, no CAN access")
     solver = PiperPinocchioIK(
-        args.urdf, orientation_weight=0.0 if args.position_only else 0.2
+        args.urdf,
+        orientation_weight=0.0 if args.position_only else 0.2,
+        position_tolerance_m=args.ik_position_tolerance_mm / 1000.0,
     )
     reference_joints = np.array([0.0, 1.5, -1.5, 0.3, 0.2, 0.1])
     reference = solver.forward_transform(reference_joints)
@@ -356,7 +368,9 @@ def run_hardware(args: argparse.Namespace, r_final: np.ndarray) -> int:
         raise RuntimeError("XRoboToolkit SDK is unavailable") from exc
 
     solver = PiperPinocchioIK(
-        args.urdf, orientation_weight=0.0 if args.position_only else 0.2
+        args.urdf,
+        orientation_weight=0.0 if args.position_only else 0.2,
+        position_tolerance_m=args.ik_position_tolerance_mm / 1000.0,
     )
     hardware: Optional[PiperJointHardware] = None
     xr_initialized = False
@@ -373,6 +387,7 @@ def run_hardware(args: argparse.Namespace, r_final: np.ndarray) -> int:
             f"orientation={'off' if args.position_only else 'soft quaternion IK'}, "
             f"orientation_range=+/-{args.max_orientation_delta_deg:g}deg, "
             f"max_joint_step={'unlimited' if args.no_joint_step_limit else f'{args.max_joint_step_deg:g}deg/frame'}, "
+            f"ik_position_tolerance={args.ik_position_tolerance_mm:g}mm, "
             f"robot_speed={args.speed_percent}%, yaw={args.yaw_deg}deg"
         )
         if args.controller_hand == "left":

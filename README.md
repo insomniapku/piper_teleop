@@ -1,81 +1,239 @@
-# Piper Robotic Arm Control & Teleoperation
+# PICO → Piper 单臂 / 双臂遥操作
 
-这是 Piper + Pico XR 遥操作仓库。V1 Cartesian Stable 是冻结回退版本；
-V2 Joint IK 已完成离线测试和操作者在场真机测试，仍处于现场调参阶段。
+本仓库提供 PICO XR 手柄到 AgileX Piper 机械臂的实时遥操作。当前代码保留三条明确分离的运行路径：可回退的 V1 笛卡尔控制、单臂 V2 关节 IK，以及单进程双臂 V2。
 
-## 支持状态
+> **真机安全提示**：启动前清空机械臂工作区并确保急停可触及。首次连接、CAN 映射变化或代码修改后，必须先单臂、低速、小幅验证。不要在同一 CAN 接口上同时运行两个控制程序。
 
-| 版本 | 状态 | 入口 |
-|---|---|---|
-| V1 Cartesian Stable | **SUPPORTED**，当前正式版 | `./run_piper_normal_teleop.sh` |
-| V1 Safe Test | **SUPPORTED**，首次连接/恢复测试 | `./run_piper_safe_teleop.sh` |
-| V2 Joint IK | **EXPERIMENTAL / LIVE TESTED**，现场调参 | `pico_teleop_piper_ik_v2.py` |
-| 旧 Python/ROS/IK 实验 | **LEGACY** | 不作为真机入口 |
+## 1. 当前状态
 
-详细版本、完整操作流程和故障排查：
+| 版本 | 状态 | 入口 | 控制方式 |
+|---|---|---|---|
+| V1 Cartesian Stable | `SUPPORTED`，冻结回退版 | `run_piper_normal_teleop.sh` | `EndPoseCtrl`，位置跟随、姿态保持 |
+| V1 Safe Test | `SUPPORTED`，恢复检查 | `run_piper_safe_teleop.sh` | 低速、小范围、不控制夹爪 |
+| V2 Single-arm IK | `LIVE TESTED` | `run_piper_v2_single.sh` | 四元数姿态 + Pinocchio J1–J6 IK |
+| V2 Bimanual IK | `LIVE TESTED / EXPERIMENTAL` | `run_piper_v2_bimanual.sh` | 一个 XR 客户端、两套独立 IK、两路 CAN |
+| 历史 Python/ROS/Placo 实验 | `LEGACY` | 无正式入口 | 仅用于追溯 |
 
-- [VERSIONS.md](VERSIONS.md)
-- [docs/OPERATIONS_ZH.md](docs/OPERATIONS_ZH.md)
-
-## 当前正式版 V1
-
-工作站上的正式启动方式：
-
-```bash
-cd /home/zktitan/piper_teleop_latency
-./run_piper_normal_teleop.sh
-```
-
-启动脚本固定使用已经过真机验证的参数：
+2026-08-27 的工作站现场验证配置：
 
 ```text
-controller-hand       = left
-position-scale        = 0.8
-speed-percent         = 100
-Python speed limit    = disabled
+left PICO controller  -> can0 -> left Piper
+right PICO controller -> can1 -> right Piper
+control rate          = 50 Hz
+position scale        = 0.8
+rotation scale        = 1.0
+orientation range     = ±180°
+joint step limit      = 5°/frame
+IK position tolerance = 2 mm
+Piper speed           = 100%
+Python XYZ speed cap  = disabled
 Python workspace clip = disabled
-gripper               = binary, fully open/fully closed
-orientation           = hold on clutch engage
-CAN                    = can0
-XR-to-robot yaw        = 0 deg
+gripper               = binary full-open/full-close
 ```
 
-操作：
+双臂版本已经记录到左右 `XR READY`、左右 Grip 激活、两路关节命令以及同时遥操作日志。它目前**没有双臂自碰撞或机械臂之间的碰撞规划**，因此仍标记为实验性。
 
-- 按住左手 Grip：机械臂位置跟随；
-- 松开 Grip：暂停跟随，可把手柄重新放回舒适位置；
-- 左手 Trigger：完整张开或完整闭合夹爪；
-- 先松开 Grip，再按 `Ctrl-C` 停止程序。
+版本边界与冻结提交见 [VERSIONS.md](VERSIONS.md)，更长的历史操作说明见 [docs/OPERATIONS_ZH.md](docs/OPERATIONS_ZH.md)。
 
-程序显示安全提示时，确认机械臂周围无人和障碍物后再输入 `ARM`。
+## 2. 系统架构
 
-## 首次连接或恢复后的 Safe Test
+### 单臂 V2
 
-不要在网络/CAN 恢复后直接运行正式速度。先执行：
-
-```bash
-cd /home/zktitan/piper_teleop_latency
-./run_piper_safe_teleop.sh
+```text
+PICO controller pose + Grip/Trigger
+             │
+             ▼
+relative translation + quaternion rotation
+             │
+             ▼
+Pinocchio position-priority / soft-orientation IK
+             │
+             ▼
+IK acceptance + per-frame joint-step limiter
+             │
+             ▼
+Piper JointCtrl over can0
 ```
 
-Safe Test 使用 20% 硬件速度、小范围位移且不控制夹爪。依次确认前后、左右、
-上下方向后，再停止 Safe Test 并启动正式版。
+### 双臂 V2
 
-## V2 Joint IK 现场测试入口
+```text
+                    one XRoboToolkit SDK client
+                              │
+                   ┌──────────┴──────────┐
+                   ▼                     ▼
+          left controller         right controller
+          independent Grip        independent Grip
+                   │                     │
+          left IK state           right IK state
+                   │                     │
+             can0 / left             can1 / right
+```
 
-V2 使用四元数/旋转矩阵保持末端姿态，Pinocchio 求解 J1-J6，并通过
-`JointCtrl` 发送连续关节目标。当前工作站使用 V1 的共享虚拟环境：
+双臂必须使用一个进程读取两个手柄。现场验证发现两个独立 Python XR 客户端会互相干扰，第二客户端可能收到零位姿，同时使主客户端出现 `XR STALE`。
+
+## 3. 关键文件
+
+```text
+pico_teleop_piper_fixed.py          # V1 冻结核心
+pico_teleop_piper_ik_v2.py          # V2 单臂核心
+pico_teleop_piper_bimanual_v2.py    # V2 双臂核心（单 XR 客户端）
+piper_ik_v2.py                       # Piper URDF / Pinocchio IK
+assets/piper_description.urdf        # J1–J6 运动学模型
+test_piper_ik_v2.py                  # IK、四元数和关节限幅测试
+run_piper_normal_teleop.sh           # V1 正式入口
+run_piper_safe_teleop.sh             # V1 安全测试入口
+run_piper_v2_single.sh               # V2 单臂固定参数入口
+run_piper_v2_bimanual.sh             # V2 双臂固定参数入口
+```
+
+旧文件暂不移动，避免破坏历史导入路径；它们不应作为新的真机入口。
+
+## 4. 环境安装
+
+### 4.1 克隆代码
 
 ```bash
-cd /home/zktitan/piper_teleop_ik_v2
-/home/zktitan/piper_teleop_latency/.venv/bin/python -u \
-  pico_teleop_piper_ik_v2.py \
+git clone https://github.com/gxccc123/piper_teleop.git
+cd piper_teleop
+git switch feature/piper-ik-orientation-v2
+```
+
+### 4.2 Python 环境
+
+当前现场验证版本：Python 3.12.3、NumPy 1.26.4、SciPy 1.11.4、Pinocchio 3.8.0、`piper-sdk` 0.6.2、`xrobotoolkit-sdk` 1.0.2。
+
+```bash
+python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-v2.txt
+python -m pip install -e ./piper_sdk
+python -m pip install -e .
+```
+
+`xrobotoolkit_sdk` 来自 XRoboToolkit PC Service 的 Python binding。若工作站没有该模块，应按照 XRoboToolkit 对应版本安装或编译；不要从不明来源安装同名包。
+
+验证运行时：
+
+```bash
+python -c "import numpy, scipy, pinocchio, piper_sdk, xrobotoolkit_sdk; print('runtime imports: OK')"
+```
+
+如果虚拟环境不在仓库的 `.venv`，启动脚本支持显式指定解释器：
+
+```bash
+export PIPER_PYTHON=/absolute/path/to/venv/bin/python
+```
+
+当前工作站复用既有环境时可设置：
+
+```bash
+export PIPER_PYTHON=/home/zktitan/piper_teleop_latency/.venv/bin/python
+```
+
+## 5. CAN 配置
+
+安装工具：
+
+```bash
+sudo apt update
+sudo apt install can-utils ethtool
+```
+
+查找适配器：
+
+```bash
+cd piper_sdk/piper_sdk
+bash find_all_can_port.sh
+```
+
+单臂示例：
+
+```bash
+bash can_activate.sh can0 1000000
+```
+
+双臂必须把两个 USB-CAN 适配器稳定映射为不同接口。当前工作站验证映射为：
+
+| 机械臂 | CAN | USB 路径 | 适配器序列号 |
+|---|---|---|---|
+| 左臂 | `can0` | `1-11.2:1.0` | `002300365547570420303135` |
+| 右臂 | `can1` | `1-11.1:1.0` | `002F003D5547571120343930` |
+
+```bash
+bash can_activate.sh can0 1000000 "1-11.2:1.0"
+bash can_activate.sh can1 1000000 "1-11.1:1.0"
+```
+
+每次重插 USB 或重启工作站后都应验证，不要只相信接口名：
+
+```bash
+ip -details link show can0
+ip -details link show can1
+timeout 2 candump can0
+timeout 2 candump can1
+```
+
+正常情况下两台 Piper 都会持续广播反馈；当前现场观测约为 200 Hz。
+
+## 6. PICO / XRoboToolkit 连接
+
+1. 在 Linux 工作站上启动一个且仅一个 XRoboToolkit PC Service。
+2. 在 PICO 中打开 XRoboToolkit 应用并保持前台运行。
+3. PICO 连接到 Linux 工作站 IP 和 PC Service **当前实际监听端口**。
+4. 确认左右手柄姿态时间戳持续更新，再按 Grip。
+
+查找监听端口：
+
+```bash
+ss -lntp | grep RoboticsService
+```
+
+当前工作站地址为 `192.168.111.123`，2026-08-27 的服务监听端口为 `63901`。历史运行曾出现其他端口，所以不要把端口永久写死；以当次 `ss` 输出或 PC Service 界面为准。
+
+不要启动第二个 PC Service，也不要并行运行 `diagnose_xr_connection.py` 与正式遥操进程。二者都可能抢占 XR 数据流。
+
+## 7. 启动前检查
+
+```bash
+ip -brief link | grep can
+pgrep -af 'pico_teleop|RoboticsServiceProcess'
+ss -lntp | grep RoboticsService
+```
+
+确认：
+
+- 机械臂周围无人、无线缆和障碍物；
+- 急停可立即触及；
+- `can0/can1` 映射与左右机械臂一致；
+- 没有其他遥操、SDK demo 或 JointCtrl 程序；
+- PICO 应用在前台且两个 Grip 都处于松开状态。
+
+## 8. 启动 V2 单臂
+
+```bash
+cd /path/to/piper_teleop
+PIPER_PYTHON=/path/to/venv/bin/python ./run_piper_v2_single.sh
+```
+
+程序要求输入 `ARM` 后才连接 CAN 并使能机械臂。启动后：
+
+- 左 Grip 按住：开始跟随；
+- 左 Grip 松开：立即停止更新关节目标并允许重新摆放手柄；
+- 左 Trigger：完整张开或完整闭合夹爪。
+
+等价完整命令：
+
+```bash
+python -u pico_teleop_piper_ik_v2.py \
   --hardware \
   --controller-hand left \
   --position-scale 0.8 \
   --rotation-scale 1.0 \
   --max-orientation-delta-deg 180 \
-  --max-joint-step-deg 2.0 \
+  --max-joint-step-deg 5 \
+  --ik-position-tolerance-mm 2 \
   --no-speed-limit \
   --no-workspace-limit \
   --speed-percent 100 \
@@ -84,312 +242,213 @@ cd /home/zktitan/piper_teleop_ik_v2
   --yaw-deg 0
 ```
 
-正式现场参数保留 `--max-joint-step-deg 2.0`，在 50 Hz 下限制每个关节每帧最多
-变化 2°。不要在真机正式操作中使用 `--no-joint-step-limit`；完全取消该保护曾导致
-raw IK 大跳步和机械臂接近硬限位。首次连接或修改 IK 后仍必须先运行 `--safe-test`。
-
-## Pico 连接
-
-Linux 上先启动 XRoboToolkit PC Service，再打开 Pico 的 XRoboToolkit 应用。
-Pico 输入的端口必须以 PC Service **当前显示**为准，不要固定使用历史端口。
+## 9. 启动 V2 双臂
 
 ```bash
-/opt/apps/roboticsservice/runService.sh
+cd /path/to/piper_teleop
+PIPER_PYTHON=/path/to/venv/bin/python ./run_piper_v2_bimanual.sh
 ```
 
-如果 PC Service 已通过桌面图标运行，不要再启动第二个实例。
+程序要求输入 `BIMANUAL` 后才连接两路 CAN。
 
-## 冻结版本
+控制映射：
 
-```text
-branch: snapshot/piper-teleop-v1-working-20260826
-tag:    piper-teleop-v1-working-20260826
-commit: 6b2b18b08d394118fcfdc473df25d957c9fe27b5
-```
+| 输入 | 输出 |
+|---|---|
+| 左 Grip | 启停 `can0` 左臂跟随 |
+| 左 Trigger | 左夹爪完整开/闭 |
+| 右 Grip | 启停 `can1` 右臂跟随 |
+| 右 Trigger | 右夹爪完整开/闭 |
 
-`pico_teleop_piper.py`、`pico_teleop_improved.py` 和旧 PyKDL/Placo 文件只保留作
-历史参考。不要在正式遥操作运行时并行启动 SDK 测试脚本或第二个 CAN 控制进程。
+第一次验证顺序：
 
-## 项目结构
+1. 两个 Grip 都松开；
+2. 只按左 Grip，分别做小幅前后、左右、上下和旋转；
+3. 松开左 Grip；
+4. 只按右 Grip，重复方向验证；
+5. 两边方向正确后才同时按住左右 Grip；
+6. 双臂末端保持足够间距，因为当前没有双臂碰撞检测。
 
-```
-lcz0820/
-├── piper_sdk/              # Piper SDK (官方)
-├── piper_teleop/           # 遥操作包
-├── piper_ros/              # ROS集成包
-├── test_piper_*.py         # SDK测试脚本
-├── PIPER_QUICK_REFERENCE.md # API快速参考
-└── README.md               # 本文件
-```
-
-## 硬件要求
-
-- Piper机械臂（固件版本：S-V1.8-9 或更高）
-- USB转CAN模块（官方或兼容模块）
-- Ubuntu 18.04/20.04/22.04
-
-## 软件依赖
-
-- Python 3.6+
-- python-can >= 3.3.4
-- ROS Noetic (可选，用于ROS功能)
-
-## 快速开始
-
-### 1. 安装依赖
+等价完整命令：
 
 ```bash
-# 启动脚本固定使用仓库根目录的 .venv
-# --system-site-packages 允许复用 Ubuntu/ROS 已安装的 CAN、SciPy 和 XR 绑定
-python3 -m venv --system-site-packages .venv
-source .venv/bin/activate
-
-# 安装仓库内 Piper SDK 和遥操作包
-python -m pip install -e ./piper_sdk
-python -m pip install -e .
-
-# 验证正式入口需要的模块
-python -c "import xrobotoolkit_sdk, piper_sdk, can, numpy, scipy; print('runtime imports: OK')"
+python -u pico_teleop_piper_bimanual_v2.py \
+  --hardware \
+  --left-can-name can0 \
+  --right-can-name can1 \
+  --position-scale 0.8 \
+  --rotation-scale 1.0 \
+  --max-orientation-delta-deg 180 \
+  --max-joint-step-deg 5 \
+  --ik-position-tolerance-mm 2 \
+  --no-speed-limit \
+  --no-workspace-limit \
+  --speed-percent 100 \
+  --binary-gripper \
+  --left-yaw-deg 0 \
+  --right-yaw-deg 0
 ```
 
-`xrobotoolkit_sdk` 来自 XRoboToolkit PC Service Python binding。若最后的导入检查
-失败，请先按照 XRoboToolkit 官方说明安装/编译 PC Service Pybind；不要从不明来源
-安装同名包。当前工作站验证环境为 Python 3.12、`xrobotoolkit-sdk 1.0.2`、
-`piper-sdk 0.6.2`、`python-can 4.3.1`、NumPy 1.26.4、SciPy 1.11.4。
+## 10. Grip、夹爪和安全机制
 
-### 2. 配置CAN模块
+### Grip clutch
+
+- Grip ≥ `0.80`：激活该手对应机械臂；
+- Grip ≤ `0.60`：释放并停止关节目标更新；
+- 每次激活都读取真机当前关节角，首个目标等于测量状态，避免重抓取时跳变。
+
+Grip 是安全离合器，不是夹爪按键。Trigger 才控制夹爪。
+
+### 夹爪
+
+带 `--binary-gripper` 时：
+
+- Trigger ≤ `0.40`：完整张开；
+- Trigger ≥ `0.60`：完整闭合；
+- 中间区间保持上一状态，避免抖动；
+- 完整张开命令为 `100000` SDK units。
+
+### XR 超时
+
+- 超过 `0.2 s` 没有新 XR 时间戳：停止更新；
+- 恢复后要求累计 10 个有效帧；
+- 双臂模式中 XR 全局断流会同时锁住两臂。
+
+### IK HOLD
+
+V2 的位置接受容差为 `2 mm`。小于该误差的有限解可以继续发送；不可达、超过容差、求解停滞或触碰 URDF 关节边界的目标保持上一条命令。不要完全删除 IK HOLD，它用于阻止错误解进入真机。
+
+### 关节步长限制
+
+当前现场值为 `5°/frame`。在 50 Hz 控制循环下，它是应用层最后一道关节目标变化限制。日志曾观察到原始 IK 请求 20–100° 的跳变，因此不要在真机上使用 `--no-joint-step-limit`。
+
+`--no-speed-limit` 和 `--no-workspace-limit` 只关闭 Python 层的笛卡尔速度裁剪和 XYZ 工作空间裁剪；URDF 关节边界、IK HOLD、5°关节步长、Piper 固件保护与 Grip/XR 超时仍然存在。
+
+## 11. tmux 后台运行
+
+单臂：
 
 ```bash
-# 安装CAN工具
-sudo apt update && sudo apt install can-utils ethtool
-
-# 查找CAN模块
-cd piper_sdk/piper_sdk
-bash find_all_can_port.sh
-
-# 激活CAN模块
-# 如果只有一个CAN模块：
-bash can_activate.sh can0 1000000
-
-# 如果有多个CAN模块，需要指定USB端口：
-bash can_activate.sh can0 1000000 "1-11.2:1.0"
-
-# 验证CAN接口是否激活
-ifconfig | grep can0
+mkdir -p logs
+tmux new -s piper_v2_single
+./run_piper_v2_single.sh 2>&1 | tee logs/v2_single.log
 ```
 
-### 3. 运行测试
+双臂：
 
 ```bash
-# 回到项目根目录
-cd ~/lcz0820
-
-# 激活虚拟环境
-source piper_venv/bin/activate
-
-# 基础测试 - 读取固件版本和关节角度
-python test_piper_basic.py
-
-# 夹爪控制测试
-python test_piper_gripper.py
-
-# 关节运动测试
-python test_piper_joint_control.py
-
-# 笛卡尔空间运动测试
-python test_piper_cartesian.py
-
-# 完整功能演示（推荐）
-python test_piper_complete_demo.py
+mkdir -p logs
+tmux new -s piper_v2_bimanual
+./run_piper_v2_bimanual.sh 2>&1 | tee logs/v2_bimanual.log
 ```
 
-## 测试脚本说明
-
-| 脚本 | 功能描述 |
-|------|----------|
-| `test_piper_basic.py` | 读取固件版本和关节角度 |
-| `test_piper_switch_slave.py` | 切换机械臂到从臂模式 |
-| `test_piper_tcp_pose.py` | 实时显示末端位姿 (TCP) |
-| `test_piper_gripper.py` | 夹爪控制演示（开/关/半开） |
-| `test_piper_joint_control.py` | 关节空间运动控制 |
-| `test_piper_cartesian.py` | 笛卡尔空间直线运动 |
-| `test_piper_complete_demo.py` | **完整功能演示（推荐从这里开始）** |
-
-## 测试结果
-
-✅ **已验证功能**：
-- 固件通信：正常，200Hz
-- 夹爪控制：精度±0.5mm
-- 关节运动：6轴控制正常
-- 笛卡尔运动：MOVEP和MOVEL模式正常
-- 状态读取：关节角度、末端位姿、夹爪状态
-
-## 核心API使用示例
-
-### 初始化
-
-```python
-from piper_sdk import *
-import time
-
-# 创建接口
-piper = C_PiperInterface_V2(can_name="can0", judge_flag=False)
-piper.ConnectPort()
-time.sleep(0.1)
-
-# 使能机械臂
-while not piper.EnablePiper():
-    time.sleep(0.01)
-```
-
-### 关节控制
-
-```python
-# 设置运动模式
-piper.MotionCtrl_2(0x01, 0x01, 50, 0x00)  # 使能，位置模式，50%速度
-
-# 关节角度（单位：毫度）
-factor = 57295.7795  # 弧度转毫度
-position_rad = [0.2, 0.2, -0.2, 0.3, -0.2, 0.5]
-joints = [round(p * factor) for p in position_rad]
-piper.JointCtrl(*joints)
-```
-
-### 笛卡尔控制
-
-```python
-# MOVEL模式 - 直线运动
-piper.MotionCtrl_2(0x01, 0x02, 50, 0x00)
-
-# 位置单位：微米，姿态单位：毫度
-piper.EndPoseCtrl(150000, -50000, 150000, -179900, 0, -179900)
-```
-
-### 夹爪控制
-
-```python
-# 回零
-piper.GripperCtrl(0, 1000, 0x02, 0)
-time.sleep(1)
-
-# 使能
-piper.GripperCtrl(0, 1000, 0x01, 0)
-time.sleep(1)
-
-# 打开到50mm（单位：微米）
-piper.GripperCtrl(50000, 1000, 0x01, 0)
-```
-
-更多API详情请参考：[PIPER_QUICK_REFERENCE.md](PIPER_QUICK_REFERENCE.md)
-
-## 遥操作功能
-
-### 配置
+分离会话：`Ctrl-B`，再按 `D`。恢复：
 
 ```bash
-# 进入遥操作包
-cd piper_teleop
-
-# 配置参数（编辑config/config.yaml）
-# 设置主从臂的CAN端口、控制模式等
+tmux attach -t piper_v2_bimanual
 ```
 
-### 运行遥操作
+停止时先松开两个 Grip，再在对应 tmux 窗口按 `Ctrl-C`。程序退出不会自动归零、回 Home 或 Disable；这是为了避免退出时产生额外运动。
+
+不要使用 `pkill python`。检查精确进程：
 
 ```bash
-# 启动遥操作节点
-# （具体命令取决于你的遥操作实现）
-roslaunch piper_teleop teleop.launch
+pgrep -af 'pico_teleop_piper_(ik_v2|bimanual_v2).py'
 ```
 
-详细文档请参考：[PIPER_TELEOP_ISSUES.md](PIPER_TELEOP_ISSUES.md)
+## 12. 离线测试
 
-## 单位转换参考
-
-| 参数 | SDK单位 | 实际单位 | 转换 |
-|------|---------|----------|------|
-| 位置 (X,Y,Z) | 微米 (μm) | 毫米 (mm) | ÷1000 |
-| 角度 | 毫度 | 度 (°) | ÷1000 |
-| 弧度 → 毫度 | - | - | ×57295.7795 |
-| 夹爪位置 | 微米 (μm) | 毫米 (mm) | ÷1000 |
-
-## 工作空间范围
-
-- **X轴**: 约 -300mm ~ 300mm
-- **Y轴**: 约 -300mm ~ 300mm  
-- **Z轴**: 约 100mm ~ 400mm
-- **夹爪**: 0mm ~ 70mm
-
-## 故障排除
-
-### CAN模块未检测到
+测试不会连接 XR 或 CAN：
 
 ```bash
-# 检查USB连接
-lsusb
+python -m py_compile \
+  pico_teleop_piper_ik_v2.py \
+  pico_teleop_piper_bimanual_v2.py \
+  piper_ik_v2.py
 
-# 检查模块是否被识别
-bash find_all_can_port.sh
+python -m unittest test_piper_ik_v2.py
 
-# 重新插拔CAN模块
+python pico_teleop_piper_ik_v2.py \
+  --dry-run \
+  --position-scale 0.8 \
+  --rotation-scale 1.0 \
+  --max-orientation-delta-deg 180 \
+  --max-joint-step-deg 5 \
+  --ik-position-tolerance-mm 2 \
+  --no-speed-limit \
+  --no-workspace-limit
+
+python pico_teleop_piper_bimanual_v2.py --dry-run \
+  --position-scale 0.8 \
+  --rotation-scale 1.0 \
+  --max-orientation-delta-deg 180 \
+  --max-joint-step-deg 5 \
+  --ik-position-tolerance-mm 2 \
+  --no-speed-limit \
+  --no-workspace-limit
 ```
 
-### 机械臂无法使能
+双臂 dry-run 会分别验证左右 121 帧轨迹。
 
-1. 确认机械臂已上电
-2. 检查CAN连接是否正常
-3. 确认处于从臂模式（运行 `test_piper_switch_slave.py`）
-4. 检查CAN接口激活状态：`ifconfig | grep can0`
+## 13. 日志含义
 
-### 运动指令无响应
+| 日志 | 含义 | 操作 |
+|---|---|---|
+| `XR READY` | 连续 10 帧有效，可按 Grip | 正常 |
+| `XR ERROR` | 位姿全零、非法或四元数无效 | 检查 PICO 应用/连接 |
+| `XR STALE` | 0.2 秒没有新数据 | 松开 Grip，恢复 XR |
+| `clutch activated` | 已读取真机关节并建立新参考 | 可小幅移动 |
+| `clutch released` | 已停止目标更新 | 正常 |
+| `IK HOLD` | 当前目标不可接受，保持上一命令 | 减小动作/重新 clutch |
+| `JOINT LIMIT` | 原始 IK 步长超过 5° | 放慢手柄，观察是否持续饱和 |
+| `PIPER ERROR` | 没有完整关节反馈 | 检查 CAN 和机械臂供电 |
 
-1. 确认已调用 `MotionCtrl_2` 设置运动模式
-2. 检查目标位置是否在工作空间内
-3. 查看机械臂状态：`piper.GetArmStatus()`
-4. 降低运动速度重试
+## 14. 常见问题
 
-### SendCanMessage(SEND_MESSAGE_FAILED)
+### PICO 显示连接但机械臂不动
 
-1. 机械臂断电后重新上电
-2. 检查CAN模块与机械臂的连接
-3. 重新激活CAN接口
+1. 检查 PICO 应用是否在前台；
+2. 用 `ss -lntp | grep RoboticsService` 确认实际端口；
+3. 检查日志是否出现 `XR READY`；
+4. 确认对应 Grip 超过激活阈值；
+5. 确认程序没有停留在 `ARM`/`BIMANUAL` 确认提示。
 
-## 安全注意事项
+### 单臂正常，双臂没有数据
 
-⚠️ **使用前请务必阅读**：
+不要启动两份单臂脚本。停止它们和诊断客户端，只保留一个 PC Service，然后启动 `pico_teleop_piper_bimanual_v2.py`。
 
-1. **运行脚本前**确保机械臂周围没有障碍物和人员
-2. **初次测试**建议使用较低速度（30-50%）
-3. **随时准备**按下急停按钮
-4. **确保目标位置**在机械臂工作空间内
-5. **避免突然**的大幅度运动
+### 运动一卡一卡
 
-## 项目文档
+查看 `IK HOLD`、`JOINT LIMIT` 和 `XR STALE`：
 
-- [API快速参考](PIPER_QUICK_REFERENCE.md) - 核心API和代码示例
-- [遥操作问题](PIPER_TELEOP_ISSUES.md) - 遥操作功能的已知问题
-- [解决方案总结](SOLUTION_SUMMARY.md) - 技术方案和优化
-- [数据采集指南](README_DATA_COLLECTION.md) - 数据采集流程
+- `IK HOLD` 多：目标不可达、姿态要求过强或接近关节边界；
+- `JOINT LIMIT` 多：手柄移动过快或 IK 分支跳变，机械臂正在追赶；
+- `XR STALE`：PICO 网络或应用前台状态不稳定；
+- 频繁 `clutch released` 且操作者未松手：Grip 模拟量可能抖动。
 
-## 参考资源
+### 左右/前后方向反了
 
-- Piper SDK官方仓库: https://github.com/agilexrobotics/piper_sdk
-- Piper SDK文档: `piper_sdk/README(ZH).MD`
-- 官方Demo: `piper_sdk/piper_sdk/demo/V2/`
-- Discord社区: https://discord.gg/wrKYTxwDBd
+先确认手柄、CAN 和机械臂映射。当前现场参数左右均为 yaw `0`。不同安装朝向可分别调整 `--left-yaw-deg` 或 `--right-yaw-deg`，每次只改一个变量并做小幅单轴验证。
 
-## 许可证
+### 夹爪只半开
 
-本项目基于MIT许可证发布。Piper SDK遵循其自身的许可证。
+确认命令包含 `--binary-gripper`，并确认运行的是 V2 正式启动脚本。当前完整张开目标是 `100000` units。
 
-## 贡献
+## 15. 已知限制
 
-欢迎提交Issue和Pull Request！
+- 双臂之间没有碰撞检测或协同规划；
+- IK 仍可能在奇异位形或关节边界附近 HOLD；
+- 原始 IK 偶尔可能产生大关节跳变，当前依靠 5°/frame 阻挡；
+- XR SDK 只提供全局时间戳，无法独立判断某一只静止手柄是否单独断流；
+- 当前 V2 使用软姿态目标，不保证所有位置都能实现完整末端朝向；
+- 日志尚未包含端到端位姿年龄和每周期 IK 耗时统计。
 
-## 联系方式
+## 16. 发布与贡献规则
 
-- GitHub: [@insomniapku](https://github.com/insomniapku)
+- 不提交密码、令牌、私钥、日志、录制数据或虚拟环境；
+- V1 冻结标签保持不可变；
+- 真机参数变化必须先通过语法、单元测试、dry-run 和小幅真机验证；
+- 同一 CAN 总线只允许一个控制进程；
+- 新功能不得以删除 Grip、XR stale 或关节限幅作为捷径。
 
----
-
-最后更新：2026-08-25
+Piper SDK 参考：[AgileX Robotics Piper SDK](https://github.com/agilexrobotics/piper_sdk)。仓库内 SDK 遵循其自身许可证。
