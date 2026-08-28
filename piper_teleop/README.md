@@ -1,110 +1,43 @@
-# Piper Teleoperation
+# Piper Teleoperation ROS 2 Package
 
-ROS2 package for teleoperating Piper robot using Pico XR controller.
+这是仓库中的 ROS 2 `ament_python` 包，提供 Pico XR 输入接口、Piper 遥操作节点、数据采集节点、启动文件和离线测试。
 
-## Development Status
+完整的硬件安全说明、单臂/双臂 V2 入口以及 LeRobot 数据集转换说明请查看仓库根目录的 [README.md](../README.md)。
 
-### M1: Package Structure ✓ (Current)
-- [x] Created independent ROS2 package
-- [x] Configuration system (YAML-based)
-- [x] Basic module structure
-- [x] Launch files
+## 主要入口
 
-### M2-M9: To Be Implemented
-- [ ] M2: Pico /xr_data interface
-- [ ] M3: Teleoperation mapping (delta pose)
-- [ ] M4: IK solver (Placo or alternative)
-- [ ] M5: Dry-run simulation mode
-- [ ] M6: Piper hardware interface
-- [ ] M7: Safety mechanisms
-- [ ] M8: Real hardware testing
-- [ ] M9: Demonstration data recorder
-
-## Package Structure
-
-```
-piper_teleop/
-├── config/
-│   └── teleop_config.yaml          # Main configuration file
-├── launch/
-│   └── teleop.launch.py            # Launch file
-├── piper_teleop/
-│   ├── __init__.py
-│   ├── piper_teleop_node.py        # Main node
-│   ├── xr_interface.py             # XR input (M2)
-│   ├── teleop_mapping.py           # Delta mapping (M3)
-│   ├── ik_solver.py                # IK solver (M4 - TBD)
-│   ├── piper_interface.py          # Hardware interface (M6 - TBD)
-│   └── data_recorder.py            # Data recorder (M9 - TBD)
-├── package.xml
-├── setup.py
-└── README.md
+```text
+pico_teleop_piper_ik_v2.py       # 单臂 V2 四元数姿态 IK
+pico_teleop_piper_bimanual_v2.py # 单 XR 客户端双臂 V2
+trajectory_recorder.py           # 关节 CSV + 三路视频同步录制
+scripts/convert_to_lerobot.py    # CSV/MP4 -> LeRobot v2.1
 ```
 
-## Configuration
-
-All parameters are controlled via `config/teleop_config.yaml`:
-
-- **XR Input**: Topic names, controller selection
-- **Position Mapping**: Scale, max delta, coordinate transforms
-- **Rotation Mapping**: Scale, max delta
-- **IK Settings**: Solver parameters, joint limits
-- **Safety**: Workspace limits, velocity limits, timeouts
-- **Gripper**: Trigger thresholds, positions
-- **Debug**: Visualization, logging
-
-## Building
+## ROS 2 构建
 
 ```bash
-cd ~/lcz0820
+cd /path/to/workspace
+source /opt/ros/jazzy/setup.bash
 colcon build --packages-select piper_teleop
 source install/setup.bash
 ```
 
-## Running (M1 - Basic Test)
+## ROS 2 启动
+
+使用 mock XR 输入进行数据采集测试：
 
 ```bash
-ros2 launch piper_teleop teleop.launch.py
+ros2 launch piper_teleop data_collection.launch.py \
+  xr_mode:=mock \
+  record_camera:=false
 ```
 
-## Dependencies
+实际 Pico XR 数据采集和真机遥操作前，请先阅读根目录 README 中的 CAN、XR 连接、Grip 离合器和急停要求。
 
-- ROS2 Humble
-- Python 3.10+
-- numpy
-- scipy
-- pyyaml
+## 数据集依赖
 
-## Design Principles
+```bash
+python -m pip install -r requirements-dataset.txt
+```
 
-1. **No modifications to piper_ros**: Independent package
-2. **Delta/reference mapping**: No direct pose mapping
-3. **YAML configuration**: All parameters configurable
-4. **Safety first**: Multiple safety layers before hardware
-5. **Staged development**: M1 → M9 sequential implementation
-
-## Topics
-
-### Subscribed (Planned)
-- `/xr_data`: XR controller data (M2)
-- `/joint_states_feedback`: Piper joint feedback (M6)
-- `/end_pose_stamped`: Piper EE pose (M6)
-
-### Published (Planned)
-- `/joint_ctrl_single`: Piper joint commands (M6)
-- `/piper_teleop/target_pose`: Target EE pose (debug)
-- `/piper_teleop/joint_target`: Target joint angles (debug)
-
-## Safety Features (M7)
-
-- Workspace limits
-- Joint limits
-- Velocity limits
-- Command timeout/watchdog
-- Tracking loss protection
-- IK failure protection
-- Emergency stop
-
-## Author
-
-Created for Pico XR → Piper teleoperation system
+转换脚本默认生成 LeRobot v2.1 格式，并已用本仓库中的三摄像头样例完成 `LeRobotDataset` 加载测试。

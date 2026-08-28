@@ -94,7 +94,7 @@ run_piper_v2_bimanual.sh             # V2 双臂固定参数入口
 ### 4.1 克隆代码
 
 ```bash
-git clone https://github.com/gxccc123/piper_teleop.git
+git clone https://github.com/insomniapku/piper_teleop.git
 cd piper_teleop
 git switch feature/piper-ik-orientation-v2
 ```
@@ -452,3 +452,73 @@ python pico_teleop_piper_bimanual_v2.py --dry-run \
 - 新功能不得以删除 Grip、XR stale 或关节限幅作为捷径。
 
 Piper SDK 参考：[AgileX Robotics Piper SDK](https://github.com/agilexrobotics/piper_sdk)。仓库内 SDK 遵循其自身许可证。
+
+
+## 17. LeRobot v2.1 数据集
+
+仓库包含一个经过实际加载测试的 LeRobot v2.1 样例：
+
+```text
+piper_teleop/lerobot_datasets/session_20260827_211359/
+```
+
+样例来自三路摄像头和一份同步关节 CSV：
+
+| 项目 | 值 |
+|---|---|
+| Episodes | 1 |
+| Frames | 716 |
+| FPS | 30 |
+| Cameras | `camera_0`, `camera_2`, `camera_8` |
+| Image size | 640 x 480 |
+| Joint dimensions | 12 |
+| Joint unit | radians |
+| Dataset format | LeRobot v2.1 |
+
+### 转换新的录制
+
+录制目录需要包含 `joint_angles.csv` 和一个或多个 `camera_*.mp4`。CSV 每一行必须与每个视频的一帧对应。转换器默认使用 `frame_index / fps` 生成标准 `timestamp`，并把原始 CSV 时间戳保存为 `observation.source_timestamp`，这样可以保留原始录制中的时间间隔异常而不破坏视频同步。
+
+安装转换依赖：
+
+```bash
+python -m pip install -r piper_teleop/requirements-dataset.txt
+sudo apt install ffmpeg
+```
+
+执行转换：
+
+```bash
+python piper_teleop/scripts/convert_to_lerobot.py \
+  --input /path/to/recordings/session_YYYYMMDD_HHMMSS \
+  --output /path/to/lerobot_datasets/session_YYYYMMDD_HHMMSS \
+  --angle-unit radians \
+  --timestamp-mode frame \
+  --video-mode transcode
+```
+
+转换器会检查 CSV 行数与所有视频帧数是否一致，并将视频转码为 H.264、写入 Parquet/JSONL 元数据和 episode 统计信息。`observation.state` 与 `action` 都是录制到的 12 维关节命令；当前采集没有独立的实测关节状态流，因此不会伪造两者之间的差异。
+
+### 加载测试
+
+LeRobot v2.1 数据集使用与之匹配的 LeRobot 版本加载。当前样例已用 `lerobot==0.3.3`、CPU PyTorch、PyAV 实际验证：
+
+```python
+from pathlib import Path
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+dataset = LeRobotDataset(
+    repo_id="local/piper_session_20260827_211359",
+    root=Path("piper_teleop/lerobot_datasets/session_20260827_211359"),
+    revision="v2.1",
+    download_videos=False,
+    video_backend="pyav",
+)
+
+print(len(dataset))                 # 716
+print(dataset.num_episodes)         # 1
+print(dataset[0]["observation.state"].shape)  # torch.Size([12])
+print(dataset[0]["observation.images.camera_0"].shape)  # [3, 480, 640]
+```
+
+样例的 `dataset[0]`、`dataset[213]` 和 `dataset[715]` 均已成功读取，三路视频均能解码。

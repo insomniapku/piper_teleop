@@ -1,0 +1,195 @@
+{
+  "codebase_version": "v2.1",
+  "robot_type": "piper_bimanual",
+  "fps": 30,
+  "total_episodes": 1,
+  "total_frames": 716,
+  "total_tasks": 1,
+  "total_videos": 3,
+  "total_chunks": 1,
+  "chunks_size": 1000,
+  "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
+  "video_path": "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4",
+  "splits": {
+    "train": "0:1"
+  },
+  "features": {
+    "observation.state": {
+      "dtype": "float32",
+      "shape": [
+        12
+      ],
+      "names": [
+        "left_j1_rad",
+        "left_j2_rad",
+        "left_j3_rad",
+        "left_j4_rad",
+        "left_j5_rad",
+        "left_j6_rad",
+        "right_j1_rad",
+        "right_j2_rad",
+        "right_j3_rad",
+        "right_j4_rad",
+        "right_j5_rad",
+        "right_j6_rad"
+      ],
+      "info": {
+        "unit": "radians"
+      }
+    },
+    "action": {
+      "dtype": "float32",
+      "shape": [
+        12
+      ],
+      "names": [
+        "left_j1_rad",
+        "left_j2_rad",
+        "left_j3_rad",
+        "left_j4_rad",
+        "left_j5_rad",
+        "left_j6_rad",
+        "right_j1_rad",
+        "right_j2_rad",
+        "right_j3_rad",
+        "right_j4_rad",
+        "right_j5_rad",
+        "right_j6_rad"
+      ],
+      "info": {
+        "unit": "radians",
+        "semantics": "recorded joint command; same source as observation.state"
+      }
+    },
+    "observation.source_timestamp": {
+      "dtype": "float64",
+      "shape": [
+        1
+      ],
+      "names": [
+        "source_timestamp"
+      ],
+      "info": {
+        "unit": "seconds",
+        "source": "joint_angles.csv"
+      }
+    },
+    "timestamp": {
+      "dtype": "float32",
+      "shape": [
+        1
+      ],
+      "names": null
+    },
+    "frame_index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "names": null
+    },
+    "episode_index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "names": null
+    },
+    "index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "names": null
+    },
+    "task_index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "names": null
+    },
+    "observation.images.camera_0": {
+      "dtype": "video",
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "names": [
+        "height",
+        "width",
+        "channel"
+      ],
+      "info": {
+        "video.fps": 30,
+        "video.codec": "h264",
+        "video.pix_fmt": "yuv420p",
+        "video.width": 640,
+        "video.height": 480,
+        "video.channels": 3,
+        "video.is_depth_map": false,
+        "has_audio": false
+      }
+    },
+    "observation.images.camera_2": {
+      "dtype": "video",
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "names": [
+        "height",
+        "width",
+        "channel"
+      ],
+      "info": {
+        "video.fps": 30,
+        "video.codec": "h264",
+        "video.pix_fmt": "yuv420p",
+        "video.width": 640,
+        "video.height": 480,
+        "video.channels": 3,
+        "video.is_depth_map": false,
+        "has_audio": false
+      }
+    },
+    "observation.images.camera_8": {
+      "dtype": "video",
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "names": [
+        "height",
+        "width",
+        "channel"
+      ],
+      "info": {
+        "video.fps": 30,
+        "video.codec": "h264",
+        "video.pix_fmt": "yuv420p",
+        "video.width": 640,
+        "video.height": 480,
+        "video.channels": 3,
+        "video.is_depth_map": false,
+        "has_audio": false
+      }
+    }
+  },
+  "source": {
+    "recording_directory": "/home/zktitan/lcz0820/piper_teleop/recordings/session_20260827_211359",
+    "joint_csv": "joint_angles.csv",
+    "camera_files": [
+      "camera_0.mp4",
+      "camera_2.mp4",
+      "camera_8.mp4"
+    ],
+    "angle_unit": "radians",
+    "timestamp_mode": "frame",
+    "video_mode": "transcode",
+    "action_definition": "action and observation.state both contain the recorded joint command; no separate measured joint-state stream was available"
+  }
+}

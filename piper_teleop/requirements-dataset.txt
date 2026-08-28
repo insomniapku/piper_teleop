@@ -1,0 +1,4 @@
+# Dependencies for scripts/convert_to_lerobot.py
+numpy>=1.26,<2
+pyarrow>=15
+opencv-python>=4.8

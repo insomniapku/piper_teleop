@@ -43,3 +43,9 @@ devel/
 
 # Claude
 .claude/
+
+# Local teleoperation recordings and generated datasets.
+piper_teleop/recordings/
+piper_teleop/lerobot_datasets/*
+!piper_teleop/lerobot_datasets/session_20260827_211359/
+!piper_teleop/lerobot_datasets/session_20260827_211359/**

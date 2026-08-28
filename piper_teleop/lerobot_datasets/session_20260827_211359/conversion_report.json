@@ -1,0 +1,56 @@
+{
+  "input": "/home/zktitan/lcz0820/piper_teleop/recordings/session_20260827_211359",
+  "output": "/home/zktitan/lcz0820/piper_teleop/lerobot_datasets/session_20260827_211359",
+  "frames": 716,
+  "fps": 30,
+  "duration_seconds": 23.866666666666667,
+  "source_timestamp_start": 3.729856,
+  "source_timestamp_end": 30.431154,
+  "source_timestamp_gaps": [
+    {
+      "after_frame_index": 213,
+      "delta_seconds": 0.18380600000000058
+    },
+    {
+      "after_frame_index": 545,
+      "delta_seconds": 2.7844770000000025
+    }
+  ],
+  "camera_metadata": {
+    "0": {
+      "codec": "mpeg4",
+      "width": 640,
+      "height": 480,
+      "pix_fmt": "yuv420p",
+      "fps": 30.0,
+      "frame_count": 716,
+      "duration": 23.866667
+    },
+    "2": {
+      "codec": "mpeg4",
+      "width": 640,
+      "height": 480,
+      "pix_fmt": "yuv420p",
+      "fps": 30.0,
+      "frame_count": 716,
+      "duration": 23.866667
+    },
+    "8": {
+      "codec": "mpeg4",
+      "width": 640,
+      "height": 480,
+      "pix_fmt": "yuv420p",
+      "fps": 30.0,
+      "frame_count": 716,
+      "duration": 23.866667
+    }
+  },
+  "output_files": {
+    "parquet": "data/chunk-000/episode_000000.parquet",
+    "videos": [
+      "videos/chunk-000/observation.images.camera_0/episode_000000.mp4",
+      "videos/chunk-000/observation.images.camera_2/episode_000000.mp4",
+      "videos/chunk-000/observation.images.camera_8/episode_000000.mp4"
+    ]
+  }
+}
