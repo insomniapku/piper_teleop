@@ -216,7 +216,10 @@ class PiperJointHardware:
     def confirm_joint_mode(self) -> None:
         self.piper.MotionCtrl_2(0x01, 0x01, self.speed_percent, 0x00)
 
-    def read_joints(self) -> Optional[np.ndarray]:
+    def read_joints_with_timestamp(
+        self,
+    ) -> Optional[tuple[np.ndarray, int, float, int]]:
+        """Read actual joints and return mapped feedback and host timestamps."""
         try:
             message = self.piper.GetArmJointMsgs()
             if message is None or message.time_stamp <= 0 or message.Hz <= 0:
@@ -229,7 +232,22 @@ class PiperJointHardware:
         except (AttributeError, TypeError, ValueError):
             return None
         joints = sdk_mdeg_to_radians(raw)
-        return joints if np.all(np.isfinite(joints)) else None
+        if not np.all(np.isfinite(joints)):
+            return None
+        host_timestamp_ns = time.monotonic_ns()
+        wall_to_monotonic_ns = time.time_ns() - host_timestamp_ns
+        feedback_timestamp_ns = (
+            int(round(float(message.time_stamp) * 1.0e9)) - wall_to_monotonic_ns
+        )
+        # python-can timestamps are Unix seconds. Fall back safely if a different
+        # SDK/backend supplies a non-Unix timestamp.
+        if abs(feedback_timestamp_ns - host_timestamp_ns) > 5_000_000_000:
+            feedback_timestamp_ns = host_timestamp_ns
+        return joints, feedback_timestamp_ns, float(message.time_stamp), host_timestamp_ns
+
+    def read_joints(self) -> Optional[np.ndarray]:
+        sample = self.read_joints_with_timestamp()
+        return None if sample is None else sample[0]
 
     def send_joints(self, joints_rad: np.ndarray) -> None:
         target = radians_to_sdk_mdeg(joints_rad)

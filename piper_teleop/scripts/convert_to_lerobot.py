@@ -20,8 +20,13 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pyarrow as pa
-import pyarrow.parquet as pq
+
+try:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+except ImportError:
+    pa = None
+    pq = None
 
 
 JOINT_COLUMNS = [
@@ -160,7 +165,7 @@ def probe_video(path: Path) -> dict[str, Any]:
     }
 
 
-def read_joint_csv(path: Path) -> tuple[np.ndarray, np.ndarray]:
+def read_joint_csv(path: Path) -> tuple[np.ndarray, np.ndarray, str]:
     if not path.is_file():
         raise FileNotFoundError(f"Missing joint CSV: {path}")
 
@@ -171,19 +176,28 @@ def read_joint_csv(path: Path) -> tuple[np.ndarray, np.ndarray]:
         missing = [column for column in ["timestamp", *JOINT_COLUMNS] if column not in reader.fieldnames]
         if missing:
             raise ValueError(f"CSV is missing columns: {', '.join(missing)}")
+        source_timestamp_column = (
+            "robot_state_timestamp"
+            if "robot_state_timestamp" in reader.fieldnames
+            else "timestamp"
+        )
 
         timestamps: list[float] = []
         joints: list[list[float]] = []
         for line_number, row in enumerate(reader, start=2):
             try:
-                timestamps.append(float(row["timestamp"]))
+                timestamps.append(float(row[source_timestamp_column]))
                 joints.append([float(row[column]) for column in JOINT_COLUMNS])
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"Invalid numeric value at CSV line {line_number}") from exc
 
     if not joints:
         raise ValueError(f"CSV contains no data rows: {path}")
-    return np.asarray(timestamps, dtype=np.float64), np.asarray(joints, dtype=np.float64)
+    return (
+        np.asarray(timestamps, dtype=np.float64),
+        np.asarray(joints, dtype=np.float64),
+        source_timestamp_column,
+    )
 
 
 def find_cameras(input_dir: Path) -> list[tuple[int, Path]]:
@@ -212,6 +226,74 @@ def stats_for_array(values: np.ndarray) -> dict[str, Any]:
         "mean": values.mean(axis=0).astype(float).tolist(),
         "std": values.std(axis=0).astype(float).tolist(),
         "count": [int(values.shape[0])],
+    }
+
+
+def analyze_source_timing(
+    source_timestamps: np.ndarray,
+    fps: int,
+    strict_tolerance_s: float = 1e-4,
+    loose_tolerance_s: float = 0.005,
+) -> dict[str, Any]:
+    """Report how closely the recorder timestamps follow a fixed FPS grid."""
+    frame_count = len(source_timestamps)
+    expected_dt = 1.0 / fps
+    normalized = source_timestamps - source_timestamps[0]
+    frame_grid = np.arange(frame_count, dtype=np.float64) * expected_dt
+    grid_error = normalized - frame_grid
+    deltas = np.diff(source_timestamps)
+
+    if len(deltas):
+        dt_error = deltas - expected_dt
+        strict_bad = np.flatnonzero(np.abs(dt_error) > strict_tolerance_s)
+        loose_bad = np.flatnonzero(np.abs(dt_error) > loose_tolerance_s)
+        dt_stats = {
+            "min": float(deltas.min()),
+            "max": float(deltas.max()),
+            "mean": float(deltas.mean()),
+            "median": float(np.median(deltas)),
+            "std": float(deltas.std()),
+            "strict_30fps_violation_count": int(len(strict_bad)),
+            "loose_30fps_violation_count": int(len(loose_bad)),
+            "loose_30fps_violations_first20": [
+                {
+                    "after_frame_index": int(index),
+                    "delta_seconds": float(deltas[index]),
+                    "error_seconds": float(dt_error[index]),
+                }
+                for index in loose_bad[:20]
+            ],
+        }
+    else:
+        dt_stats = {
+            "min": None,
+            "max": None,
+            "mean": None,
+            "median": None,
+            "std": None,
+            "strict_30fps_violation_count": 0,
+            "loose_30fps_violation_count": 0,
+            "loose_30fps_violations_first20": [],
+        }
+
+    return {
+        "fps": fps,
+        "frame_count": frame_count,
+        "expected_delta_seconds": expected_dt,
+        "strict_tolerance_seconds": strict_tolerance_s,
+        "loose_tolerance_seconds": loose_tolerance_s,
+        "source_timestamp_start": float(source_timestamps[0]),
+        "source_timestamp_end": float(source_timestamps[-1]),
+        "source_timestamp_span": float(source_timestamps[-1] - source_timestamps[0]),
+        "expected_last_frame_timestamp": float(frame_grid[-1]),
+        "last_frame_grid_error_seconds": float(grid_error[-1]),
+        "max_abs_frame_grid_error_seconds": float(np.max(np.abs(grid_error))),
+        "mean_abs_frame_grid_error_seconds": float(np.mean(np.abs(grid_error))),
+        "delta_stats": dt_stats,
+        "is_strictly_30fps": bool(
+            len(deltas) == 0 or np.all(np.abs(deltas - expected_dt) <= strict_tolerance_s)
+        ),
+        "is_close_to_30fps_overall": bool(abs(grid_error[-1]) <= loose_tolerance_s),
     }
 
 
@@ -339,6 +421,12 @@ def validate_frame_alignment(
 
 
 def convert(args: argparse.Namespace) -> dict[str, Any]:
+    if pa is None or pq is None:
+        raise RuntimeError(
+            "pyarrow is required to write LeRobot parquet files. "
+            "Install piper_teleop/requirements-dataset.txt or run with a Python environment that has pyarrow."
+        )
+
     input_dir = args.input.expanduser().resolve()
     output_dir = args.output.expanduser().resolve()
     if not input_dir.is_dir():
@@ -352,7 +440,9 @@ def convert(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError("Refusing to overwrite the input directory or one of its parents")
         shutil.rmtree(output_dir)
 
-    source_timestamps, source_joints = read_joint_csv(input_dir / "joint_angles.csv")
+    source_timestamps, source_joints, source_timestamp_column = read_joint_csv(
+        input_dir / "joint_angles.csv"
+    )
     cameras = find_cameras(input_dir)
     camera_metadata = {camera_id: probe_video(path) for camera_id, path in cameras}
     validate_frame_alignment(len(source_joints), camera_metadata)
@@ -518,6 +608,7 @@ def convert(args: argparse.Namespace) -> dict[str, Any]:
         "source": {
             "recording_directory": str(input_dir),
             "joint_csv": "joint_angles.csv",
+            "source_timestamp_column": source_timestamp_column,
             "camera_files": [path.name for _, path in cameras],
             "angle_unit": args.angle_unit,
             "timestamp_mode": args.timestamp_mode,
@@ -561,6 +652,7 @@ def convert(args: argparse.Namespace) -> dict[str, Any]:
 
     timestamp_deltas = np.diff(source_timestamps)
     gap_indices = np.flatnonzero(timestamp_deltas > (1.5 / fps)).astype(int)
+    timing_report = analyze_source_timing(source_timestamps, fps)
     report = {
         "input": str(input_dir),
         "output": str(output_dir),
@@ -576,6 +668,21 @@ def convert(args: argparse.Namespace) -> dict[str, Any]:
             }
             for index in gap_indices
         ],
+        "timing": timing_report,
+        "alignment": {
+            "camera_frame_counts_match_csv_rows": True,
+            "camera_fps_all_30": bool(
+                all(abs(metadata["fps"] - fps) <= 0.01 for metadata in camera_metadata.values())
+            ),
+            "video_and_csv_aligned_by_frame_index": True,
+            "source_timestamps_strictly_30fps": timing_report["is_strictly_30fps"],
+            "source_timestamps_close_to_30fps_overall": timing_report["is_close_to_30fps_overall"],
+            "dataset_timestamp_mode": args.timestamp_mode,
+            "note": (
+                "The source files do not contain camera wall-clock timestamps. "
+                "Alignment is verified by equal frame/row counts and preserved frame order."
+            ),
+        },
         "camera_metadata": camera_metadata,
         "output_files": {
             "parquet": str(parquet_path.relative_to(output_dir)),
@@ -599,6 +706,10 @@ because the source recording has no separate measured joint-state stream.
 Video and CSV rows are synchronized by frame index. The original CSV
 timestamps are available in `observation.source_timestamp`; the standard
 `timestamp` column uses `{args.timestamp_mode}` mode.
+
+See `conversion_report.json` for detailed timing diagnostics. In particular,
+`timing.is_strictly_30fps` reports whether the raw recorder timestamps are
+uniform at exactly 1/FPS intervals.
 """,
         encoding="utf-8",
     )

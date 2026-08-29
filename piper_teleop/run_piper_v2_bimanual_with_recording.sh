@@ -29,6 +29,7 @@ fi
 
 exec "${python_bin}" -u "${repo_dir}/pico_teleop_piper_bimanual_v2.py" \
   --hardware \
+  --control-rate 60 \
   --left-can-name can0 \
   --right-can-name can1 \
   --position-scale 0.8 \

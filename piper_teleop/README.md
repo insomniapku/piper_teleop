@@ -41,3 +41,8 @@ python -m pip install -r requirements-dataset.txt
 ```
 
 转换脚本默认生成 LeRobot v2.1 格式，并已用本仓库中的三摄像头样例完成 `LeRobotDataset` 加载测试。
+
+录制时控制频率为 60 Hz、视频为 30 fps。摄像头由独立线程持续采集，
+机械臂实际反馈在每个控制周期采样，写盘线程按时间戳匹配最近的状态和视频帧。
+`joint_angles.csv` 同时保存 `robot_state_timestamp`、各臂反馈时间、
+各路相机时间及匹配误差；`sync_report.json` 保存本次录制的丢帧和阈值统计。

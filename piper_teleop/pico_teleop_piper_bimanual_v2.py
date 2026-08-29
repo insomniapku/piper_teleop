@@ -100,6 +100,15 @@ def parse_args() -> argparse.Namespace:
         args.no_gripper = True
 
     args.dry_run = not args.hardware
+    if args.enable_recording:
+        if args.camera_fps <= 0.0:
+            parser.error("--camera-fps must be positive")
+        recording_ratio = args.control_rate / args.camera_fps
+        if recording_ratio < 1.0 or abs(recording_ratio - round(recording_ratio)) > 1.0e-9:
+            parser.error(
+                "--control-rate must be >= and an integer multiple of --camera-fps "
+                "when recording without interpolation"
+            )
     urdf_path = Path(args.urdf).expanduser()
     if not urdf_path.is_absolute():
         urdf_path = Path(__file__).resolve().parent / urdf_path
@@ -177,6 +186,24 @@ class ArmChannel:
         self.activation_pending = False
         self.valid_frames = 0
         self.clear_clutch()
+
+    def state_for_recording(
+        self,
+    ) -> Optional[tuple[np.ndarray, int, float | None, int]]:
+        """Return actual Piper feedback with mapped and host timestamps."""
+        measured = self.hardware.read_joints_with_timestamp()
+        if measured is not None:
+            joints, feedback_timestamp_ns, device_timestamp, host_timestamp_ns = measured
+            return (
+                joints.copy(),
+                feedback_timestamp_ns,
+                device_timestamp,
+                host_timestamp_ns,
+            )
+        if self.previous_joints is not None:
+            timestamp_ns = time.monotonic_ns()
+            return self.previous_joints.copy(), timestamp_ns, None, timestamp_ns
+        return None
 
     def process_pose(self, dt: float) -> None:
         pose = self.get_pose()
@@ -412,13 +439,16 @@ def run_hardware(args: argparse.Namespace) -> int:
         )
 
         period = 1.0 / args.control_rate
-        recording_period = 1.0 / args.camera_fps  # 30 Hz for recording
+        recording_cycle_interval = int(round(args.control_rate / args.camera_fps))
         next_tick = last_cycle = last_new_xr_time = time.monotonic()
-        next_recording_tick = next_tick
         last_timestamp = None
         stale_announced = False
+        control_cycle_index = 0
+        recording_start_cycle = 0
         while True:
-            cycle_start = time.monotonic()
+            cycle_start_ns = time.monotonic_ns()
+            cycle_start = cycle_start_ns / 1.0e9
+            control_cycle_index += 1
             next_tick += period
             dt = float(np.clip(cycle_start - last_cycle, 0.005, 0.05))
             last_cycle = cycle_start
@@ -437,7 +467,9 @@ def run_hardware(args: argparse.Namespace) -> int:
                     else:
                         if recorder.start_recording():
                             print("[RECORDER] Recording started (B button pressed)")
-                            next_recording_tick = cycle_start  # Reset recording timer
+                            # Start on the next tick so the first timestamp is not before
+                            # the recorder's session start time. At 60/30 Hz this is every 2 cycles.
+                            recording_start_cycle = control_cycle_index + 1
                 previous_b_button = current_b_button
 
             timestamp = xrt.get_time_stamp_ns()
@@ -448,13 +480,42 @@ def run_hardware(args: argparse.Namespace) -> int:
                 for arm in arms:
                     arm.process_pose(dt)
 
-            # Record joint angles and camera frames at 30Hz if recording is active
-            if recorder and recorder.is_recording and cycle_start >= next_recording_tick:
-                left_joints = left.previous_joints
-                right_joints = right.previous_joints
-                if left_joints is not None and right_joints is not None:
-                    recorder.record_frame(left_joints, right_joints)
-                next_recording_tick += recording_period
+            # Sample actual arm feedback at every 60 Hz control tick. Recording
+            # requests are matched to these samples by the asynchronous writer.
+            if recorder and recorder.is_recording:
+                left_state = left.state_for_recording()
+                right_state = right.state_for_recording()
+                if left_state is not None and right_state is not None:
+                    (
+                        left_joints,
+                        left_timestamp_ns,
+                        left_device_timestamp,
+                        left_host_timestamp_ns,
+                    ) = left_state
+                    (
+                        right_joints,
+                        right_timestamp_ns,
+                        right_device_timestamp,
+                        right_host_timestamp_ns,
+                    ) = right_state
+                    recorder.record_state(
+                        left_joints,
+                        right_joints,
+                        left_timestamp_ns,
+                        right_timestamp_ns,
+                        left_device_timestamp,
+                        right_device_timestamp,
+                        left_host_timestamp_ns,
+                        right_host_timestamp_ns,
+                    )
+                    if (
+                        (control_cycle_index - recording_start_cycle)
+                        % recording_cycle_interval
+                        == 0
+                    ):
+                        recorder.record_frame(
+                            timestamp_ns=max(left_timestamp_ns, right_timestamp_ns)
+                        )
 
             if cycle_start - last_new_xr_time > XR_STALE_SECONDS:
                 if not stale_announced:
