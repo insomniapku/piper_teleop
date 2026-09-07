@@ -189,9 +189,10 @@ class ArmChannel:
 
     def state_for_recording(
         self,
-    ) -> Optional[tuple[np.ndarray, int, float | None, int]]:
-        """Return actual Piper feedback with mapped and host timestamps."""
+    ) -> Optional[tuple[np.ndarray, int, float | None, int, float]]:
+        """Return arm feedback, gripper command, and mapped timestamps."""
         measured = self.hardware.read_joints_with_timestamp()
+        gripper_trigger = 0.0 if self.previous_trigger is None else self.previous_trigger
         if measured is not None:
             joints, feedback_timestamp_ns, device_timestamp, host_timestamp_ns = measured
             return (
@@ -199,10 +200,17 @@ class ArmChannel:
                 feedback_timestamp_ns,
                 device_timestamp,
                 host_timestamp_ns,
+                float(gripper_trigger),
             )
         if self.previous_joints is not None:
             timestamp_ns = time.monotonic_ns()
-            return self.previous_joints.copy(), timestamp_ns, None, timestamp_ns
+            return (
+                self.previous_joints.copy(),
+                timestamp_ns,
+                None,
+                timestamp_ns,
+                float(gripper_trigger),
+            )
         return None
 
     def process_pose(self, dt: float) -> None:
@@ -390,7 +398,7 @@ def run_hardware(args: argparse.Namespace) -> int:
     recorder = None
     if args.enable_recording:
         recorder = TrajectoryRecorder(
-            camera_indices=(0, 2, 8),  # Three cameras: video0, video2, video8
+            camera_indices=(0, 2, 8),  # Logical slots: two Dabai streams and RealSense
             fps=args.camera_fps,
             recording_dir=args.recording_dir,
         )
@@ -413,9 +421,9 @@ def run_hardware(args: argparse.Namespace) -> int:
             left_hardware,
             left_solver,
             installation_rotation(args.left_yaw_deg) @ R_XR_TO_PIPER,
-            xrt.get_right_controller_pose,  # Swapped: left arm uses right controller
-            xrt.get_right_grip,
-            xrt.get_right_trigger,
+            xrt.get_left_controller_pose,
+            xrt.get_left_grip,
+            xrt.get_left_trigger,
             args,
         )
         right = ArmChannel(
@@ -423,9 +431,9 @@ def run_hardware(args: argparse.Namespace) -> int:
             right_hardware,
             right_solver,
             installation_rotation(args.right_yaw_deg) @ R_XR_TO_PIPER,
-            xrt.get_left_controller_pose,  # Swapped: right arm uses left controller
-            xrt.get_left_grip,
-            xrt.get_left_trigger,
+            xrt.get_right_controller_pose,
+            xrt.get_right_grip,
+            xrt.get_right_trigger,
             args,
         )
         arms = (left, right)
@@ -491,12 +499,14 @@ def run_hardware(args: argparse.Namespace) -> int:
                         left_timestamp_ns,
                         left_device_timestamp,
                         left_host_timestamp_ns,
+                        left_gripper_trigger,
                     ) = left_state
                     (
                         right_joints,
                         right_timestamp_ns,
                         right_device_timestamp,
                         right_host_timestamp_ns,
+                        right_gripper_trigger,
                     ) = right_state
                     recorder.record_state(
                         left_joints,
@@ -507,6 +517,8 @@ def run_hardware(args: argparse.Namespace) -> int:
                         right_device_timestamp,
                         left_host_timestamp_ns,
                         right_host_timestamp_ns,
+                        left_gripper_trigger,
+                        right_gripper_trigger,
                     )
                     if (
                         (control_cycle_index - recording_start_cycle)

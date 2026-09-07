@@ -4,12 +4,17 @@
 Records:
 - Left arm joint angles (6 DOF)
 - Right arm joint angles (6 DOF)
-- Three camera feeds (video0, video2, video4)
+- Left and right gripper command states (normalized 0.0=open, 1.0=closed)
+- Three camera feeds (two Orbbec SDK streams and one V4L2 stream)
 - Timestamps for synchronization
 """
 
 import csv
 import json
+import os
+import shutil
+import struct
+import subprocess
 import threading
 import time
 from collections import deque
@@ -39,6 +44,8 @@ class RobotStateSample:
     sequence: int
     left_joints_rad: np.ndarray
     right_joints_rad: np.ndarray
+    left_gripper_trigger: float
+    right_gripper_trigger: float
     left_timestamp_ns: int
     right_timestamp_ns: int
     left_host_timestamp_ns: int
@@ -79,6 +86,91 @@ class RecordingSession:
                 writer.release()
 
 
+class OrbbecBridgeCapture:
+    """Read length-prefixed JPEG frames from the Orbbec SDK bridge."""
+
+    def __init__(
+        self,
+        bridge_path: str,
+        uid: str,
+        width: int,
+        height: int,
+        fps: int,
+    ) -> None:
+        self.width = width
+        self.height = height
+        self.fps = fps
+        self.process = subprocess.Popen(
+            [
+                bridge_path,
+                "--uid",
+                uid,
+                "--width",
+                str(width),
+                "--height",
+                str(height),
+                "--fps",
+                str(fps),
+            ],
+            stdout=subprocess.PIPE,
+            # Keep bridge diagnostics visible. The binary frame stream is on
+            # stdout; stderr is safe for human-readable SDK errors.
+            stderr=None,
+            bufsize=0,
+        )
+        if self.process.stdout is None:
+            self.release()
+            raise RuntimeError("Orbbec bridge did not provide a frame pipe")
+
+    def _read_exact(self, size: int) -> Optional[bytes]:
+        if self.process.stdout is None:
+            return None
+        chunks: list[bytes] = []
+        remaining = size
+        while remaining > 0:
+            chunk = self.process.stdout.read(remaining)
+            if not chunk:
+                return None
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    def read(self) -> tuple[bool, Optional[np.ndarray]]:
+        """Read and decode one JPEG frame from the bridge."""
+        header = self._read_exact(4)
+        if header is None:
+            return False, None
+        payload_size = struct.unpack("!I", header)[0]
+        if not 1 <= payload_size <= 32 * 1024 * 1024:
+            return False, None
+        payload = self._read_exact(payload_size)
+        if payload is None:
+            return False, None
+        frame = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
+        return frame is not None, frame
+
+    def get(self, property_id: int) -> float:
+        if property_id == cv2.CAP_PROP_FRAME_WIDTH:
+            return float(self.width)
+        if property_id == cv2.CAP_PROP_FRAME_HEIGHT:
+            return float(self.height)
+        if property_id == cv2.CAP_PROP_FPS:
+            return float(self.fps)
+        return 0.0
+
+    def release(self) -> None:
+        """Stop the bridge process and close its frame pipe."""
+        if self.process.stdout is not None:
+            self.process.stdout.close()
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=1.0)
+
+
 class TrajectoryRecorder:
     """Records joint trajectories and synchronized camera feeds."""
 
@@ -98,7 +190,8 @@ class TrajectoryRecorder:
         self.lock = threading.Lock()
 
         # Camera capture objects
-        self.captures: dict[int, cv2.VideoCapture] = {}
+        self.captures: dict[int, cv2.VideoCapture | OrbbecBridgeCapture] = {}
+        self.orbbec_uids_by_camera: dict[int, str] = {}
         self.camera_threads: dict[int, threading.Thread] = {}
         self.camera_stop_flags: dict[int, threading.Event] = {}
         self.camera_buffers: dict[int, deque[CameraFrame]] = {}
@@ -108,7 +201,6 @@ class TrajectoryRecorder:
         self.state_buffer: deque[RobotStateSample] = deque(maxlen=128)
         self.state_sequence = 0
         self.last_written_state_sequence = 0
-
         # Camera capture and video encoding must never run in the 60 Hz control thread.
         self.record_queue: Queue[Optional[RecordingRequest]] = Queue(maxsize=16)
         self.writer_thread: Optional[threading.Thread] = None
@@ -116,10 +208,11 @@ class TrajectoryRecorder:
         self.max_camera_skew_ns = 20_000_000
         self.max_state_skew_ns = 12_000_000
 
-    def _init_cameras(self) -> bool:
+    def _init_cameras(self, camera_indices: Optional[tuple[int, ...]] = None) -> bool:
         """Initialize camera captures. Returns True even if no cameras available."""
-        import os
         import grp
+
+        indices = self.camera_indices if camera_indices is None else camera_indices
 
         # Check if user has video group permission
         try:
@@ -132,18 +225,55 @@ class TrajectoryRecorder:
         except KeyError:
             pass
 
-        for idx in self.camera_indices:
+        orbbec_uids = self._discover_orbbec_uids()
+        if orbbec_uids:
+            print(f"[RECORDER] Orbbec devices discovered: {orbbec_uids}")
+        elif any(idx in (0, 2) for idx in indices):
+            print(
+                "[RECORDER] No Orbbec devices discovered; "
+                "camera 0/2 require V4L2 nodes or the Orbbec bridge"
+            )
+        used_orbbec_uids = set(self.orbbec_uids_by_camera.values())
+        available_orbbec_uids = [
+            uid for uid in orbbec_uids if uid not in used_orbbec_uids
+        ]
+        orbbec_uid_index = 0
+        for idx in indices:
+            if idx in self.captures:
+                continue
             try:
                 cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
+                source_description = ""
                 if not cap.isOpened():
+                    cap.release()
+                    cap = None
+
+                if cap is None and idx in (0, 2):
+                    if orbbec_uid_index < len(available_orbbec_uids):
+                        uid = available_orbbec_uids[orbbec_uid_index]
+                        orbbec_uid_index += 1
+                        bridge_path = self._find_orbbec_bridge()
+                        if bridge_path:
+                            cap = OrbbecBridgeCapture(
+                                bridge_path,
+                                uid,
+                                width=640,
+                                height=480,
+                                fps=self.fps,
+                            )
+                            self.orbbec_uids_by_camera[idx] = uid
+                            source_description = f" via Orbbec SDK UID {uid}"
+
+                if cap is None:
                     print(f"[RECORDER] Warning: camera {idx} failed to open")
                     continue
 
                 # Set resolution and FPS
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                cap.set(cv2.CAP_PROP_FPS, self.fps)
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                if isinstance(cap, cv2.VideoCapture):
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    cap.set(cv2.CAP_PROP_FPS, self.fps)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
                 self.captures[idx] = cap
                 self.camera_buffers[idx] = deque(maxlen=12)
@@ -151,7 +281,7 @@ class TrajectoryRecorder:
                 print(f"[RECORDER] Camera {idx} initialized: "
                       f"{int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x"
                       f"{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} @ "
-                      f"{int(cap.get(cv2.CAP_PROP_FPS))}fps")
+                      f"{int(cap.get(cv2.CAP_PROP_FPS))}fps{source_description}")
             except Exception as e:
                 print(f"[RECORDER] Error initializing camera {idx}: {e}")
                 continue
@@ -162,6 +292,52 @@ class TrajectoryRecorder:
         self._start_camera_threads()
 
         return True  # Always return True to allow joint-only recording
+
+    @staticmethod
+    def _find_orbbec_bridge() -> Optional[str]:
+        """Locate the optional Orbbec SDK bridge executable."""
+        configured = os.environ.get("ORBBEC_COLOR_BRIDGE", "").strip()
+        candidates = [
+            configured,
+            shutil.which("orbbec_color_bridge") or "",
+            "/home/zktitan/lqw-project/piper/vla_deploy/camera/orbbec_bridge/build/orbbec_color_bridge",
+            "/opt/orbbec_color_bridge",
+        ]
+        for candidate in candidates:
+            if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        return None
+
+    def _discover_orbbec_uids(self) -> list[str]:
+        """Return current UIDs for connected Orbbec DaBai devices.
+
+        The bridge's ``--list`` output includes both a removable-device-stable
+        UID and the current SDK UID. ``getDeviceByUid`` must receive the latter.
+        """
+        bridge_path = self._find_orbbec_bridge()
+        if bridge_path is None:
+            return []
+        try:
+            result = subprocess.run(
+                [bridge_path, "--list"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"[RECORDER] Orbbec discovery failed: {exc}")
+            return []
+
+        uids: list[str] = []
+        for line in result.stdout.splitlines()[1:]:
+            fields = line.split("\t")
+            if len(fields) < 5 or fields[4].lower() != "2bc5:657":
+                continue
+            uid = fields[2].strip()
+            if uid:
+                uids.append(uid)
+        return uids
 
     def _start_camera_threads(self) -> None:
         for cam_idx, cap in self.captures.items():
@@ -181,7 +357,7 @@ class TrajectoryRecorder:
     def _camera_loop(
         self,
         cam_idx: int,
-        cap: cv2.VideoCapture,
+        cap: cv2.VideoCapture | OrbbecBridgeCapture,
         stop_flag: threading.Event,
     ) -> None:
         """Continuously capture frames without blocking the control loop."""
@@ -245,6 +421,8 @@ class TrajectoryRecorder:
         right_device_timestamp: Optional[float] = None,
         left_host_timestamp_ns: Optional[int] = None,
         right_host_timestamp_ns: Optional[int] = None,
+        left_gripper_trigger: float = 0.0,
+        right_gripper_trigger: float = 0.0,
     ) -> None:
         """Store one actual-feedback sample without blocking the control loop."""
         timestamp_ns = max(left_timestamp_ns, right_timestamp_ns)
@@ -260,6 +438,8 @@ class TrajectoryRecorder:
                     sequence=self.state_sequence,
                     left_joints_rad=np.asarray(left_joints_rad, dtype=np.float64).copy(),
                     right_joints_rad=np.asarray(right_joints_rad, dtype=np.float64).copy(),
+                    left_gripper_trigger=float(left_gripper_trigger),
+                    right_gripper_trigger=float(right_gripper_trigger),
                     left_timestamp_ns=left_timestamp_ns,
                     right_timestamp_ns=right_timestamp_ns,
                     left_host_timestamp_ns=left_host_timestamp_ns,
@@ -381,6 +561,8 @@ class TrajectoryRecorder:
                     f"{timestamp:.6f}",
                     *[f"{angle:.6f}" for angle in left_deg],
                     *[f"{angle:.6f}" for angle in right_deg],
+                    f"{state.left_gripper_trigger:.6f}",
+                    f"{state.right_gripper_trigger:.6f}",
                     f"{state_timestamp:.6f}",
                     f"{state_camera_delta:.6f}",
                     f"{left_state_timestamp:.6f}",
@@ -424,10 +606,18 @@ class TrajectoryRecorder:
                 print("[RECORDER] Already recording")
                 return False
 
-            # Initialize cameras if not done
-            if not self.captures and not hasattr(self, '_camera_init_attempted'):
-                self._camera_init_attempted = True
-                self._init_cameras()
+            # Initialize all cameras on the first recording and retry only the
+            # missing logical slots on later recording attempts.
+            missing = tuple(idx for idx in self.camera_indices if idx not in self.captures)
+            if missing:
+                self._init_cameras(missing)
+            missing = tuple(idx for idx in self.camera_indices if idx not in self.captures)
+            if missing:
+                print(
+                    "[RECORDER] Missing camera(s): "
+                    f"{list(missing)}. Available: {sorted(self.captures)}. "
+                    "Check USB connection, V4L2 nodes, or Orbbec bridge output."
+                )
 
             # Create session directory
             timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -442,6 +632,8 @@ class TrajectoryRecorder:
                 'timestamp',
                 'left_j1', 'left_j2', 'left_j3', 'left_j4', 'left_j5', 'left_j6',
                 'right_j1', 'right_j2', 'right_j3', 'right_j4', 'right_j5', 'right_j6',
+                'left_gripper_trigger',
+                'right_gripper_trigger',
                 'robot_state_timestamp',
                 'state_camera_delta_seconds',
                 'left_state_timestamp',
@@ -604,6 +796,7 @@ class TrajectoryRecorder:
         for thread in self.camera_threads.values():
             thread.join(timeout=1.0)
         self.captures.clear()
+        self.orbbec_uids_by_camera.clear()
         self.camera_threads.clear()
         self.camera_stop_flags.clear()
         print("[RECORDER] Cleanup complete")

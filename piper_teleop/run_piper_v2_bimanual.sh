@@ -29,8 +29,8 @@ exec "${python_bin}" -u "${repo_dir}/pico_teleop_piper_bimanual_v2.py" \
   --no-workspace-limit \
   --speed-percent 100 \
   --binary-gripper \
-  --left-yaw-deg 0 \
-  --right-yaw-deg 0 \
+  --left-yaw-deg 180 \
+  --right-yaw-deg 180 \
   --enable-recording \
   --recording-dir "${repo_dir}/recordings" \
   --camera-fps 30

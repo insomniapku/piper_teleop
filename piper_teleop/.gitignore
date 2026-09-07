@@ -18,9 +18,23 @@ __pycache__/
 
 # Collected data
 data/
+recordings/
+lerobot_datasets/
 *.h5
 *.bag
 *.db3
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.csv
+*.zip
+*.zip.part.*
+*.pdf
+*.err
+
+# Generated test output
+test-results/
 
 # Local progress notes and one-off experiments
 M[0-9]_REPORT.md
@@ -30,3 +44,6 @@ piper_teleop/*_examples.py
 piper_teleop/m5_demo.py
 piper_teleop/test_new_seed.py
 test_placo_ik.py
+
+# Local backups
+*.backup
