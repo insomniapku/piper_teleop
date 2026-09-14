@@ -45,4 +45,8 @@ exec "${python_bin}" -u "${repo_dir}/pico_teleop_piper_bimanual_v2.py" \
   --right-yaw-deg 0 \
   --enable-recording \
   --recording-dir "${repo_dir}/recordings" \
-  --camera-fps 30
+  --camera-fps 30 \
+  --left-home-joints-deg=0.693,-0.227,-9.648,2.311,19.343,0.000 \
+  --right-home-joints-deg=-1.513,-0.349,-1.076,1.592,17.133,-0.399 \
+  --home-duration 3 \
+  "$@"
