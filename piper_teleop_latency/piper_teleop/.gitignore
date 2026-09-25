@@ -1,0 +1,32 @@
+# ROS 2 build and runtime output
+build/
+install/
+log/
+
+# Python caches and test output
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+
+# Local environments and editor settings
+.venv/
+.claude/
+.vscode/
+.idea/
+
+# Collected data
+data/
+*.h5
+*.bag
+*.db3
+
+# Local progress notes and one-off experiments
+M[0-9]_REPORT.md
+M3_M4_DIAGNOSIS.md
+piper_teleop/diagnose_*.py
+piper_teleop/*_examples.py
+piper_teleop/m5_demo.py
+piper_teleop/test_new_seed.py
+test_placo_ik.py

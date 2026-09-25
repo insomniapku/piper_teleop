@@ -1,0 +1,73 @@
+# Piper Teleoperation Configuration
+
+piper_teleop_node:
+  ros__parameters:
+    # XR Input Settings
+    xr_input:
+      topic: "/xr_data"
+      controller_name: "right_controller"
+
+    # Position Mapping
+    position_mapping:
+      scale: 1.0  # Scale factor for position delta (start conservative)
+      max_delta: 0.1  # Maximum position change per step (meters)
+
+    # Rotation Mapping
+    rotation_mapping:
+      scale: 1.0  # Scale factor for rotation delta
+      max_delta: 0.2  # Maximum rotation change per step (radians)
+
+    # Coordinate Transform
+    # Transform from XR controller frame to Piper base frame
+    # Format: [x, y, z, roll, pitch, yaw]
+    xr_to_piper_transform:
+      translation: [0.0, 0.0, 0.0]
+      rotation: [0.0, 0.0, 0.0]  # Euler angles in radians
+
+    # Piper Robot Settings
+    piper:
+      joint_ctrl_topic: "/joint_ctrl_single"
+      joint_state_topic: "/joint_states_feedback"
+      end_pose_topic: "/end_pose_stamped"
+
+    # IK Settings
+    ik:
+      max_iterations: 100
+      tolerance: 0.001
+      use_current_as_seed: true
+
+    # Joint Limits (radians)
+    joint_limits:
+      joint1: [-3.14, 3.14]
+      joint2: [-1.57, 1.57]
+      joint3: [-3.14, 3.14]
+      joint4: [-1.57, 1.57]
+      joint5: [-3.14, 3.14]
+      joint6: [-3.14, 3.14]
+
+    # Safety Limits
+    safety:
+      workspace_limit:
+        x_min: -0.1  # 修复: 包含初始EE位置 (约-0.02m)
+        x_max: 0.6
+        y_min: -0.4
+        y_max: 0.4
+        z_min: 0.0   # 修复: 包含初始EE位置 (约0.22m)
+        z_max: 0.8
+      max_joint_velocity: 0.5  # rad/s
+      command_timeout: 0.5  # seconds
+      enable_workspace_limit: true
+      enable_velocity_limit: true
+
+    # Gripper Settings
+    gripper:
+      trigger_threshold: 0.5  # Trigger value to activate gripper (0-1)
+      open_position: 0.0  # Gripper open position
+      close_position: 0.08  # Gripper close position (meters)
+
+    # Debug Settings
+    debug:
+      enable_visualization: true
+      log_level: "info"  # debug, info, warn, error
+      publish_target_pose: true
+      publish_rate: 50  # Hz
