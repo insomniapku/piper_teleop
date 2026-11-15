@@ -76,6 +76,13 @@ class RecordingSession:
     queue_full_count: int = 0
     sync_timeout_count: int = 0
     writer_error_count: int = 0
+    stale_request_count: int = 0
+    first_capture_ns: Optional[int] = None
+    last_capture_ns: Optional[int] = None
+    max_frame_interval_ns: int = 0
+    long_frame_gaps: int = 0
+    max_capture_to_write_ns: int = 0
+    last_flush_ns: int = 0
 
     def close(self):
         """Close all file handles."""
@@ -180,10 +187,12 @@ class TrajectoryRecorder:
         fps: int = 30,
         recording_dir: str = "recordings",
     ):
+        if fps <= 0:
+            raise ValueError("recording FPS must be positive")
         self.camera_indices = camera_indices
         self.fps = fps
         self.recording_dir = Path(recording_dir)
-        self.recording_dir.mkdir(exist_ok=True)
+        self.recording_dir.mkdir(parents=True, exist_ok=True)
 
         self.is_recording = False
         self.session: Optional[RecordingSession] = None
@@ -202,11 +211,14 @@ class TrajectoryRecorder:
         self.state_sequence = 0
         self.last_written_state_sequence = 0
         # Camera capture and video encoding must never run in the 60 Hz control thread.
-        self.record_queue: Queue[Optional[RecordingRequest]] = Queue(maxsize=16)
+        # Bound latency to two requests instead of retaining ~0.5 s of backlog.
+        self.record_queue: Queue[Optional[RecordingRequest]] = Queue(maxsize=2)
         self.writer_thread: Optional[threading.Thread] = None
         self.camera_wait_timeout_ns = 50_000_000
         self.max_camera_skew_ns = 20_000_000
         self.max_state_skew_ns = 12_000_000
+        self.max_request_age_ns = max(100_000_000, int(3e9 / fps))
+        self.service_stats_provider = None
 
     def _init_cameras(self, camera_indices: Optional[tuple[int, ...]] = None) -> bool:
         """Initialize camera captures. Returns True even if no cameras available."""
@@ -371,6 +383,7 @@ class TrajectoryRecorder:
             read_end_ns = time.monotonic_ns()
             timestamp_ns = (read_start_ns + read_end_ns) // 2
             if not ret:
+                stop_flag.wait(0.005)
                 continue
 
             with self.camera_condition:
@@ -457,53 +470,33 @@ class TrajectoryRecorder:
         deadline_ns = time.monotonic_ns() + self.camera_wait_timeout_ns
         with self.camera_condition:
             while True:
-                if camera_ids:
-                    reference = self._find_camera_frame_locked(
-                        camera_ids[0], target_timestamp_ns
-                    )
-                    if reference is None:
-                        reference_timestamp_ns = target_timestamp_ns
-                        selected: dict[int, Optional[CameraFrame]] = {}
-                    else:
-                        reference_timestamp_ns = reference.timestamp_ns
-                        selected = {
-                            camera_ids[0]: reference,
-                            **{
-                                cam_idx: self._find_camera_frame_locked(
-                                    cam_idx, reference_timestamp_ns
-                                )
-                                for cam_idx in camera_ids[1:]
-                            },
-                        }
-                else:
-                    reference_timestamp_ns = target_timestamp_ns
-                    selected = {}
-
-                state = self._find_state_locked(reference_timestamp_ns)
-                frames_ready = len(selected) == len(camera_ids) and all(
-                    frame is not None for frame in selected.values()
-                )
-                if state is not None and frames_ready:
-                    typed = {
-                        cam_idx: frame
-                        for cam_idx, frame in selected.items()
-                        if frame is not None
-                    }
-                    state_error = abs(
-                        state.timestamp_ns - reference_timestamp_ns
-                    )
-                    camera_errors = [
-                        abs(frame.timestamp_ns - reference_timestamp_ns)
-                        for frame in typed.values()
-                    ]
-                    if (
-                        state_error <= self.max_state_skew_ns
-                        and max(camera_errors, default=0) <= self.max_camera_skew_ns
-                    ):
-                        for cam_idx, frame in typed.items():
+                # A nearest reference can be impossible to pair with the other
+                # cameras. Try the other buffered references before waiting.
+                references = sorted(
+                    (frame for frame in self.camera_buffers[camera_ids[0]]
+                     if frame.sequence > self.last_written_sequences.get(camera_ids[0], 0)
+                     and abs(frame.timestamp_ns-target_timestamp_ns) <= self.max_request_age_ns),
+                    key=lambda frame: abs(frame.timestamp_ns-target_timestamp_ns),
+                ) if camera_ids else [None]
+                for reference in references:
+                    reference_timestamp_ns = (
+                        target_timestamp_ns if reference is None else reference.timestamp_ns)
+                    selected = {cam_idx: self._find_camera_frame_locked(
+                        cam_idx, reference_timestamp_ns) for cam_idx in camera_ids[1:]}
+                    if reference is not None:
+                        selected[camera_ids[0]] = reference
+                    if any(frame is None for frame in selected.values()):
+                        continue
+                    state = self._find_state_locked(reference_timestamp_ns)
+                    if state is None:
+                        continue
+                    if (abs(state.timestamp_ns-reference_timestamp_ns) <= self.max_state_skew_ns
+                            and all(abs(frame.timestamp_ns-reference_timestamp_ns)
+                                    <= self.max_camera_skew_ns for frame in selected.values())):
+                        for cam_idx, frame in selected.items():
                             self.last_written_sequences[cam_idx] = frame.sequence
                         self.last_written_state_sequence = state.sequence
-                        return state, typed, reference_timestamp_ns
+                        return state, selected, reference_timestamp_ns
 
                 remaining_ns = deadline_ns - time.monotonic_ns()
                 if remaining_ns <= 0:
@@ -521,6 +514,10 @@ class TrajectoryRecorder:
             try:
                 if bundle is None:
                     return
+                if time.monotonic_ns() - bundle.timestamp_ns > self.max_request_age_ns:
+                    session.dropped_bundle_count += 1
+                    session.stale_request_count += 1
+                    continue
 
                 synchronized = self._wait_for_synchronized_bundle(
                     bundle.timestamp_ns, camera_ids
@@ -530,6 +527,11 @@ class TrajectoryRecorder:
                     session.sync_timeout_count += 1
                     continue
                 state, camera_frames, reference_timestamp_ns = synchronized
+                interval_ns = (0 if session.last_capture_ns is None else
+                               reference_timestamp_ns - session.last_capture_ns)
+                if session.last_capture_ns is not None and interval_ns <= 0:
+                    raise ValueError("capture timestamps must increase")
+                write_delay_ns = max(0, time.monotonic_ns() - reference_timestamp_ns)
 
                 for cam_idx in camera_ids:
                     session.video_writers[cam_idx].write(camera_frames[cam_idx].image)
@@ -588,9 +590,20 @@ class TrajectoryRecorder:
                         camera_frames[cam_idx].timestamp_ns - state.timestamp_ns
                     ) / 1.0e9
                     row.extend([f"{camera_timestamp:.6f}", f"{camera_delta:.6f}"])
+                row.extend([session.frame_count, f"{interval_ns/1e9:.6f}",
+                            f"{write_delay_ns/1e9:.6f}"])
 
                 session.csv_writer.writerow(row)
-                session.csv_file.flush()
+                now_ns = time.monotonic_ns()
+                if now_ns - session.last_flush_ns >= 500_000_000:
+                    session.csv_file.flush()
+                    session.last_flush_ns = now_ns
+                if session.first_capture_ns is None:
+                    session.first_capture_ns = reference_timestamp_ns
+                session.last_capture_ns = reference_timestamp_ns
+                session.max_frame_interval_ns = max(session.max_frame_interval_ns, interval_ns)
+                session.long_frame_gaps += int(interval_ns > 1.5e9 / self.fps)
+                session.max_capture_to_write_ns = max(session.max_capture_to_write_ns, write_delay_ns)
                 session.frame_count += 1
             except Exception as exc:
                 session.dropped_bundle_count += 1
@@ -620,7 +633,7 @@ class TrajectoryRecorder:
                 )
 
             # Create session directory
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            timestamp = time.strftime("%Y%m%d_%H%M%S") + f"_{time.time_ns()%1_000_000_000:09d}"
             session_dir = self.recording_dir / f"session_{timestamp}"
             session_dir.mkdir(parents=True, exist_ok=True)
 
@@ -643,13 +656,6 @@ class TrajectoryRecorder:
                 'left_feedback_device_timestamp',
                 'right_feedback_device_timestamp',
             ]
-            for cam_idx in sorted(self.captures):
-                header.extend([
-                    f'camera_{cam_idx}_timestamp',
-                    f'camera_{cam_idx}_delta_seconds',
-                ])
-            csv_writer.writerow(header)
-
             # Create video writers for each camera
             video_writers = {}
             video_paths = {}
@@ -673,6 +679,13 @@ class TrajectoryRecorder:
                 except Exception as e:
                     print(f"[RECORDER] Error creating video writer for camera {cam_idx}: {e}")
                     continue
+
+            # Header and rows must describe the same successful video writers,
+            # including the case where one camera's encoder failed to open.
+            for cam_idx in sorted(video_writers):
+                header.extend([f'camera_{cam_idx}_timestamp', f'camera_{cam_idx}_delta_seconds'])
+            header.extend(['frame_index', 'frame_interval_seconds', 'capture_to_write_seconds'])
+            csv_writer.writerow(header)
 
             # Create session object
             self.session = RecordingSession(
@@ -722,8 +735,20 @@ class TrajectoryRecorder:
             try:
                 self.record_queue.put_nowait(bundle)
             except Full:
-                self.session.dropped_bundle_count += 1
-                self.session.queue_full_count += 1
+                # Prefer the current request over obsolete work after an encoder
+                # stall; never block control or synthesize duplicate video frames.
+                try:
+                    self.record_queue.get_nowait()
+                    self.record_queue.task_done()
+                    self.session.dropped_bundle_count += 1
+                    self.session.queue_full_count += 1
+                except Empty:
+                    pass
+                try:
+                    self.record_queue.put_nowait(bundle)
+                except Full:
+                    self.session.dropped_bundle_count += 1
+                    self.session.queue_full_count += 1
 
     def stop_recording(self) -> Optional[Path]:
         """Stop the current recording session."""
@@ -751,14 +776,22 @@ class TrajectoryRecorder:
             frame_count = session.frame_count
             dropped_count = session.dropped_bundle_count
             sync_report = {
-                "format": "piper_trajectory_recording_v3",
+                "format": "piper_trajectory_recording_v4",
                 "fps": self.fps,
                 "frames_written": frame_count,
                 "dropped_bundles": dropped_count,
                 "queue_full_count": session.queue_full_count,
                 "sync_timeout_count": session.sync_timeout_count,
                 "writer_error_count": session.writer_error_count,
+                "stale_request_count": session.stale_request_count,
+                "max_frame_interval_ms": session.max_frame_interval_ns / 1e6,
+                "long_frame_gaps": session.long_frame_gaps,
+                "max_capture_to_write_ms": session.max_capture_to_write_ns / 1e6,
+                "effective_capture_fps": (
+                    (frame_count-1) * 1e9 / (session.last_capture_ns-session.first_capture_ns)
+                    if frame_count > 1 and session.last_capture_ns > session.first_capture_ns else None),
                 "camera_ids": sorted(session.video_writers),
+                "missing_camera_ids": sorted(set(self.camera_indices)-set(session.video_writers)),
                 "uses_interpolation": False,
                 "camera_timestamp_source": (
                     "host monotonic midpoint around cv2.VideoCapture.read()"
@@ -769,6 +802,9 @@ class TrajectoryRecorder:
                 "host_state_read_timestamp_source": "host monotonic clock after GetArmJointMsgs()",
                 "max_camera_skew_ms": self.max_camera_skew_ns / 1.0e6,
                 "max_state_skew_ms": self.max_state_skew_ns / 1.0e6,
+                "max_request_age_ms": self.max_request_age_ns / 1e6,
+                "recording_service": (self.service_stats_provider()
+                                      if self.service_stats_provider else None),
             }
             (session_dir / "sync_report.json").write_text(
                 json.dumps(sync_report, indent=2) + "\n",

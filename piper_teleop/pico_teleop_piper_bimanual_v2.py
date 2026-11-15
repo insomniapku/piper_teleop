@@ -42,6 +42,7 @@ from pico_teleop_piper_ik_v2 import (
 )
 from piper_ik_v2 import PiperPinocchioIK
 from trajectory_recorder import TrajectoryRecorder
+from teleop_recording import RecordingService
 
 # Captured from live can0/can1 feedback on 2026-09-14.
 DEFAULT_HOME_JOINTS_DEG = "0.693,-0.227,-9.648,2.311,19.343,0.000"
@@ -258,11 +259,9 @@ def parse_args() -> argparse.Namespace:
     if args.enable_recording:
         if args.camera_fps <= 0.0:
             parser.error("--camera-fps must be positive")
-        recording_ratio = args.control_rate / args.camera_fps
-        if recording_ratio < 1.0 or abs(recording_ratio - round(recording_ratio)) > 1.0e-9:
+        if args.control_rate < args.camera_fps:
             parser.error(
-                "--control-rate must be >= and an integer multiple of --camera-fps "
-                "when recording without interpolation"
+                "--control-rate (feedback sampling rate) must be >= --camera-fps"
             )
     urdf_path = Path(args.urdf).expanduser()
     if not urdf_path.is_absolute():
@@ -420,15 +419,6 @@ class ArmChannel:
                 feedback_timestamp_ns,
                 device_timestamp,
                 host_timestamp_ns,
-                float(gripper_trigger),
-            )
-        if self.previous_joints is not None:
-            timestamp_ns = time.monotonic_ns()
-            return (
-                self.previous_joints.copy(),
-                timestamp_ns,
-                None,
-                timestamp_ns,
                 float(gripper_trigger),
             )
         return None
@@ -622,6 +612,7 @@ def run_hardware(args: argparse.Namespace) -> int:
 
     # Initialize recorder if enabled
     recorder = None
+    recording_service = None
     if args.enable_recording:
         recorder = TrajectoryRecorder(
             camera_indices=(0, 2, 8),  # Logical slots: two Dabai streams and RealSense
@@ -667,6 +658,12 @@ def run_hardware(args: argparse.Namespace) -> int:
             home_joints=args.right_home_joints_rad.copy(),
         )
         arms = (left, right)
+        if recorder:
+            recording_service = RecordingService(
+                recorder, left_hardware.read_joints_with_timestamp,
+                right_hardware.read_joints_with_timestamp, args.control_rate,
+            )
+            recording_service.start()
         print(
             f"Bimanual V2 ready: {args.control_rate:g}Hz, scale={args.position_scale:g}, "
             f"rotation_scale={args.rotation_scale:g}, max_joint_step="
@@ -680,22 +677,20 @@ def run_hardware(args: argparse.Namespace) -> int:
         )
 
         period = 1.0 / args.control_rate
-        recording_cycle_interval = int(round(args.control_rate / args.camera_fps))
         next_tick = last_cycle = last_new_xr_time = time.monotonic()
         last_timestamp = None
         stale_announced = False
-        control_cycle_index = 0
-        recording_start_cycle = 0
         while True:
             cycle_start_ns = time.monotonic_ns()
             cycle_start = cycle_start_ns / 1.0e9
-            control_cycle_index += 1
             next_tick += period
             dt = float(np.clip(cycle_start - last_cycle, 0.005, 0.05))
             last_cycle = cycle_start
 
             for arm in arms:
                 arm.update_buttons(cycle_start)
+            if recording_service:
+                recording_service.update_grippers(left.previous_trigger, right.previous_trigger)
 
             current_a_button = bool(xrt.get_A_button())
             home_requested = (current_a_button and not previous_a_button) or keyboard.pressed()
@@ -705,9 +700,9 @@ def run_hardware(args: argparse.Namespace) -> int:
                 if already_homing:
                     print("[HOME] ignored; already returning to the fixed pose")
                 else:
-                    if recorder and recorder.is_recording:
-                        recorder.stop_recording()
-                        print("[HOME] recording stopped; returning to the fixed pose")
+                    if recording_service:
+                        recording_service.request_stop()
+                        print("[HOME] recording stop requested; returning to the fixed pose")
                     started = [arm.start_homing() for arm in arms]
                     if not all(started):
                         for arm, ok in zip(arms, started):
@@ -716,21 +711,14 @@ def run_hardware(args: argparse.Namespace) -> int:
                         print("[HOME] aborted; missing joint feedback on at least one arm")
 
             # Handle B button for recording
-            if recorder:
+            if recording_service:
                 current_b_button = xrt.get_B_button()
                 if current_b_button and not previous_b_button:
                     # Button pressed (rising edge)
-                    if recorder.is_recording:
-                        recorder.stop_recording()
-                        print("[RECORDER] Recording stopped (B button pressed)")
+                    if any(arm.homing_active for arm in arms):
+                        print("[RECORDER] ignored; wait for homing to finish")
                     else:
-                        if any(arm.homing_active for arm in arms):
-                            print("[RECORDER] ignored; wait for homing to finish")
-                        elif recorder.start_recording():
-                            print("[RECORDER] Recording started (B button pressed)")
-                            # Start on the next tick so the first timestamp is not before
-                            # the recorder's session start time. At 60/30 Hz this is every 2 cycles.
-                            recording_start_cycle = control_cycle_index + 1
+                        recording_service.request_toggle()
                 previous_b_button = current_b_button
 
             for arm in arms:
@@ -745,47 +733,6 @@ def run_hardware(args: argparse.Namespace) -> int:
                 for arm in arms:
                     arm.process_pose(dt)
 
-            # Sample actual arm feedback at every 60 Hz control tick. Recording
-            # requests are matched to these samples by the asynchronous writer.
-            if recorder and recorder.is_recording:
-                left_state = left.state_for_recording()
-                right_state = right.state_for_recording()
-                if left_state is not None and right_state is not None:
-                    (
-                        left_joints,
-                        left_timestamp_ns,
-                        left_device_timestamp,
-                        left_host_timestamp_ns,
-                        left_gripper_trigger,
-                    ) = left_state
-                    (
-                        right_joints,
-                        right_timestamp_ns,
-                        right_device_timestamp,
-                        right_host_timestamp_ns,
-                        right_gripper_trigger,
-                    ) = right_state
-                    recorder.record_state(
-                        left_joints,
-                        right_joints,
-                        left_timestamp_ns,
-                        right_timestamp_ns,
-                        left_device_timestamp,
-                        right_device_timestamp,
-                        left_host_timestamp_ns,
-                        right_host_timestamp_ns,
-                        left_gripper_trigger,
-                        right_gripper_trigger,
-                    )
-                    if (
-                        (control_cycle_index - recording_start_cycle)
-                        % recording_cycle_interval
-                        == 0
-                    ):
-                        recorder.record_frame(
-                            timestamp_ns=max(left_timestamp_ns, right_timestamp_ns)
-                        )
-
             if cycle_start - last_new_xr_time > XR_STALE_SECONDS:
                 if not stale_announced:
                     print("[BOTH] [XR STALE] >0.2s; both arms stopped")
@@ -794,6 +741,8 @@ def run_hardware(args: argparse.Namespace) -> int:
                     if not arm.homing_active:
                         arm.block_for_stale()
 
+            if recording_service:
+                recording_service.observe_control_cycle(time.monotonic() - cycle_start)
             remaining = next_tick - time.monotonic()
             if remaining > 0.0:
                 time.sleep(remaining)
@@ -804,10 +753,14 @@ def run_hardware(args: argparse.Namespace) -> int:
         return 0
     finally:
         keyboard.close()
-        if recorder:
-            recorder.cleanup()
-        if xr_initialized:
-            xrt.close()
+        try:
+            if recording_service:
+                recording_service.close()
+            elif recorder:
+                recorder.cleanup()
+        finally:
+            if xr_initialized:
+                xrt.close()
 
 
 def main() -> int:
